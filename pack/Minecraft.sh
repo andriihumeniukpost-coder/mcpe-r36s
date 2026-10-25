@@ -6,10 +6,13 @@ LOG="$GAMEDIR/log.txt"
 mkdir -p "$GAMEDIR" 2>/dev/null
 # everything below is logged, even early failures
 exec > "$LOG" 2>&1
+# flush the log to the SD card every second, so a freeze/reboot still leaves the trail
+( while true; do sync; sleep 1; done ) &
+SYNCPID=$!
 echo "== launcher $(date)"
 echo "== uname: $(uname -a)"
 echo "== script dir: $HERE"
-fail() { echo "FATAL: $*"; sleep 8; exit 1; }
+fail() { echo "FATAL: $*"; sync; sleep 8; kill $SYNCPID 2>/dev/null; exit 1; }
 
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 for d in /opt/system/Tools/PortMaster /opt/tools/PortMaster "$XDG_DATA_HOME/PortMaster" /roms/ports/PortMaster; do
@@ -66,7 +69,7 @@ echo "== deps of mcpe (armhf loader):"; LD_TRACE_LOADED_OBJECTS=1 ./mcpe 2>&1 | 
 echo "== 32-bit runtime libs:"; ls -la "$LIBSYS"/libSDL2* "$LIBSYS"/libstdc++* "$LIBSYS"/libgcc_s* "$LIBSYS"/libEGL* "$LIBSYS"/libGLESv2* 2>&1 | head -20
 
 [ -n "$GPTOKEYB" ] && { $GPTOKEYB "mcpe" & }
-echo "== starting"
+echo "== starting"; sync
 ./mcpe
 RC=$?
 echo "== mcpe exited with code $RC"
@@ -76,5 +79,7 @@ if [ $RC -eq 1 ]; then
 fi
 [ -n "$GPTOKEYB" ] && kill %1 2>/dev/null
 # keep the message on screen briefly instead of flashing away
+sync
 [ $RC -ne 0 ] && sleep 5
+kill $SYNCPID 2>/dev/null
 exit $RC
