@@ -11,6 +11,14 @@ GAMEDIR="$(cd "$(dirname "$0")/mcpe" && pwd)"
 cd "$GAMEDIR"
 exec > "$GAMEDIR/log.txt" 2>&1
 
+# First run: unpack game files from the APK that the user put next to the launcher
+if [ ! -f libs/libminecraftpe.so ]; then
+  APK=$(ls "$GAMEDIR"/*.apk 2>/dev/null | head -1)
+  [ -n "$APK" ] || { echo "Put minecraft-0-16-0.apk into $GAMEDIR"; exit 1; }
+  unzip -o -j "$APK" "lib/armeabi-v7a/libminecraftpe.so" "lib/armeabi-v7a/libfmod.so" -d libs
+  unzip -o "$APK" "assets/*" -d "$GAMEDIR"
+fi
+
 # Android-style names for the system libraries (32-bit armhf)
 LIBSYS=/usr/lib/arm-linux-gnueabihf
 [ -d "$LIBSYS" ] || LIBSYS=/usr/lib32

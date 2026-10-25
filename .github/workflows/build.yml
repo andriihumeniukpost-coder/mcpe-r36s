@@ -6,11 +6,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
-      - name: Build in a 32-bit ARM Ubuntu 20.04 (glibc matches ArkOS)
+      - name: Build + self-check in 32-bit ARM Ubuntu 20.04 (glibc matches ArkOS)
         run: |
           docker run --rm --platform linux/arm/v7 -v "$PWD":/w -w /w ubuntu:20.04 bash -c '
+            set -e
             export DEBIAN_FRONTEND=noninteractive
-            apt-get update && apt-get install -y build-essential libsdl2-dev curl ca-certificates binutils
-            sh tools/fetch_deps.sh && make -j4'
+            apt-get update && apt-get install -y build-essential libsdl2-dev curl ca-certificates binutils zip
+            sh tools/fetch_deps.sh && make -j4
+            echo "== shim exports (renamed bc_* must be gone, real names present)"
+            nm -D --defined-only build/libs/libc.so | grep -E " (pthread_mutex_lock|pthread_cond_wait|stat|fstat|readdir|fprintf|__sF|__errno|_ctype_)$"
+            ! nm -D --defined-only build/libs/libc.so | grep " bc_"
+            nm -D --defined-only build/libs/libm.so | grep -E " (sinf|powf|atan2f)$"
+            nm -D --defined-only build/libs/libEGL.so | grep -E " (eglGetProcAddress|eglSwapBuffers)$"
+            nm -D --defined-only build/libs/libOpenSLES.so | grep -E " (slCreateEngine|SL_IID_ENGINE)$"
+            nm -D --defined-only build/libs/libandroid.so | grep -E " (ALooper_pollAll|AInputQueue_getEvent)$"
+            echo "== package"
+            mkdir -p pkg/mcpe/libs pkg/mcpe/assets pkg/mcpe/data
+            cp build/mcpe pkg/mcpe/ && cp build/libs/*.so pkg/mcpe/libs/
+            cp pack/Minecraft.sh pkg/ && echo "Put minecraft-0-16-0.apk into mcpe/ and launch Minecraft.sh" > pkg/mcpe/PUT_APK_HERE.txt
+            (cd pkg && zip -qr ../mcpe-r36s-port.zip .)'
       - uses: actions/upload-artifact@v4
-        with: { name: mcpe-r36s-build, path: build/ }
+        with: { name: mcpe-r36s-port, path: mcpe-r36s-port.zip }
