@@ -318,7 +318,18 @@ EXPORT int bc_pthread_attr_getdetachstate(const struct battr *a, int *s) { *s = 
 EXPORT int bc_pthread_attr_setstacksize(struct battr *a, size_t s) { a->stack_size = s; return 0; }
 EXPORT int bc_pthread_attr_getstacksize(const struct battr *a, size_t *s) { *s = a->stack_size; return 0; }
 EXPORT int bc_pthread_attr_setschedparam(struct battr *a, const struct sched_param *p) { a->prio = p ? p->sched_priority : 0; return 0; }
+struct tstart { void *(*fn)(void *); void *arg; };
+static void *thread_tramp(void *p) {
+    struct tstart s = *(struct tstart *)p; free(p);
+    fprintf(stderr, "[thread] start fn=%p\n", (void *)s.fn);
+    void *r = s.fn(s.arg);
+    fprintf(stderr, "[thread] fn=%p returned\n", (void *)s.fn);
+    return r;
+}
 EXPORT int bc_pthread_create(pthread_t *t, const struct battr *a, void *(*fn)(void *), void *arg) {
+    struct tstart *ts = malloc(sizeof *ts); ts->fn = fn; ts->arg = arg;
+    fprintf(stderr, "[thread] create fn=%p stack=%zu\n", (void *)fn, a ? a->stack_size : 0);
+    fn = thread_tramp; arg = ts;
     int (*r)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *) = R("pthread_create");
     pthread_attr_t ha;
     int (*ainit)(pthread_attr_t *) = R("pthread_attr_init");
@@ -330,7 +341,9 @@ EXPORT int bc_pthread_create(pthread_t *t, const struct battr *a, void *(*fn)(vo
         int (*sds)(pthread_attr_t *, int) = R("pthread_attr_setdetachstate");
         sds(&ha, (a->flags & 1) ? PTHREAD_CREATE_DETACHED : PTHREAD_CREATE_JOINABLE);
     }
-    return r(t, &ha, fn, arg);
+    int rc = r(t, &ha, fn, arg);
+    fprintf(stderr, "[thread] create -> %d\n", rc);
+    return rc;
 }
 
 /* Cleanup handlers (no cancellation support: just run on pop(execute)) */

@@ -27,6 +27,7 @@ EXPORT AAssetManager *shim_asset_manager_create(const char *root) {
 }
 
 EXPORT AAsset *AAssetManager_open(AAssetManager *m, const char *name, int mode) {
+    { static int n; if (n < 40) { n++; fprintf(stderr, "[android] AAssetManager_open %s\n", name); } }
     (void)mode;
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", m->root, name);
@@ -79,7 +80,7 @@ EXPORT const char *AAssetDir_getNextFileName(AAssetDir *ad) {
 EXPORT void AAssetDir_close(AAssetDir *ad) { if (ad) { closedir(ad->d); free(ad); } }
 
 /* ------------------------------------------------------ configuration */
-EXPORT void *AConfiguration_new(void) { return calloc(1, 64); }
+EXPORT void *AConfiguration_new(void) { fprintf(stderr, "[android] AConfiguration_new\n"); return calloc(1, 64); }
 EXPORT void AConfiguration_delete(void *c) { free(c); }
 EXPORT void AConfiguration_fromAssetManager(void *c, AAssetManager *m) { (void)c; (void)m; }
 EXPORT void AConfiguration_getLanguage(void *c, char *out) { (void)c; out[0] = 'e'; out[1] = 'n'; }
@@ -91,6 +92,7 @@ struct fdent { int fd, ident; void *data; };
 static __thread ALooper *tl_looper;
 
 EXPORT ALooper *ALooper_prepare(int opts) {
+    fprintf(stderr, "[android] ALooper_prepare\n");
     (void)opts;
     if (!tl_looper) {
         tl_looper = calloc(1, sizeof *tl_looper);
@@ -99,6 +101,7 @@ EXPORT ALooper *ALooper_prepare(int opts) {
     return tl_looper;
 }
 EXPORT int ALooper_addFd(ALooper *l, int fd, int ident, int events, void *cb, void *data) {
+    fprintf(stderr, "[android] ALooper_addFd fd=%d ident=%d\n", fd, ident);
     (void)events; (void)cb; /* callbacks unsupported: the glue uses ident polling */
     struct fdent *e = calloc(1, sizeof *e);
     e->fd = fd; e->ident = ident; e->data = data;
@@ -106,6 +109,7 @@ EXPORT int ALooper_addFd(ALooper *l, int fd, int ident, int events, void *cb, vo
     return epoll_ctl(l->epfd, EPOLL_CTL_ADD, fd, &ev) == 0 ? 1 : -1;
 }
 EXPORT int ALooper_pollAll(int timeout, int *outFd, int *outEvents, void **outData) {
+    { static int n; if (n < 5) { n++; fprintf(stderr, "[android] ALooper_pollAll timeout=%d\n", timeout); } }
     ALooper *l = ALooper_prepare(0);
     struct epoll_event ev;
     int n = epoll_wait(l->epfd, &ev, 1, timeout);

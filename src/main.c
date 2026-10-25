@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <execinfo.h>
+#include <sys/mman.h>
 #include <ucontext.h>
 #include "elf_loader.h"
 
@@ -27,6 +28,9 @@ jobject fake_activity_obj(void);
 static void scan_stack(uintptr_t *sp, int words) {
     int shown = 0;
     for (int i = 0; i < words && shown < 60; i++) {
+        if ((((uintptr_t)(sp + i)) & 4095) == 0 || i == 0) {      /* never read past the end of the stack */
+            unsigned char vec; if (mincore((void *)((uintptr_t)(sp + i) & ~4095u), 1, &vec)) break;
+        }
         uintptr_t off, w = sp[i]; const char *n = elf_where(w, &off);
         if (n) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, n, (unsigned long)off); shown++; continue; }
         Dl_info di;
