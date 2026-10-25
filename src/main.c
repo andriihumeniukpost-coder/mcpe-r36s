@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <execinfo.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <ucontext.h>
 #include "elf_loader.h"
 
@@ -44,10 +45,39 @@ static void scan_stack(uintptr_t *sp, int words) {
 /* called from the bionic-compat shim (raise/abort/kill...) to show who asked for it */
 void host_report(const char *what, void *ra) {
     uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off);
-    fprintf(stderr, "[trace] %s called from %s+0x%lx (ra=%p)\n", what, w ? w : "?", (unsigned long)off, ra);
+    fprintf(stderr, "[trace] tid=%d %s called from %s+0x%lx (ra=%p)\n", (int)syscall(SYS_gettid), what, w ? w : "?", (unsigned long)off, ra);
     volatile uintptr_t here = 0;
-    scan_stack((uintptr_t *)&here, 2048);
+    scan_stack((uintptr_t *)&here, 700);
     fflush(stderr);
+}
+
+
+/* Interposers: calls from ld.so-loaded libs (and the shim) that end the process or a thread get reported */
+int raise(int sig) {
+    static int (*real)(int); char b[32]; snprintf(b, sizeof b, "raise(%d)", sig);
+    host_report(b, __builtin_return_address(0));
+    if (!real) real = dlsym(RTLD_NEXT, "raise");
+    return real(sig);
+}
+int pthread_kill(pthread_t t, int sig) {
+    static int (*real)(pthread_t, int); char b[48]; snprintf(b, sizeof b, "pthread_kill(%d)", sig);
+    if (sig != SIGUSR2) host_report(b, __builtin_return_address(0));
+    if (!real) real = dlsym(RTLD_NEXT, "pthread_kill");
+    return real(t, sig);
+}
+void pthread_exit(void *r) {
+    static void (*real)(void *) __attribute__((noreturn));
+    host_report("pthread_exit", __builtin_return_address(0));
+    if (!real) real = dlsym(RTLD_NEXT, "pthread_exit");
+    real(r);
+    for (;;) {}
+}
+void exit(int code) {
+    static void (*real)(int) __attribute__((noreturn)); char b[32]; snprintf(b, sizeof b, "exit(%d)", code);
+    host_report(b, __builtin_return_address(0));
+    if (!real) real = dlsym(RTLD_NEXT, "exit");
+    real(code);
+    for (;;) {}
 }
 
 static void crash(int sig, siginfo_t *si, void *uc) {
@@ -73,7 +103,7 @@ static void crash(int sig, siginfo_t *si, void *uc) {
                 fprintf(stderr, "[host]   %s in %s (%s) %s+0x%lx\n", rn[i], di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "?",
                         di.dli_sname ? "sym" : "base", (unsigned long)(regs[i] - (uintptr_t)(di.dli_sname ? di.dli_saddr : di.dli_fbase)));
         }
-        scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 2048);
+        scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 700);
     }
     int n = backtrace(bt, 48);
     backtrace_symbols_fd(bt, n, 2);
@@ -239,7 +269,7 @@ static void usr2(int sig, siginfo_t *si, void *uc) {
     fprintf(stderr, "  lr=0x%lx", (unsigned long)lr);
     if (w) fprintf(stderr, " %s+0x%lx", w, (unsigned long)off);
     fprintf(stderr, "\n");
-    scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 1500);
+    scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 700);
     fflush(stderr);
     __sync_lock_release(&dump_lock);
 }
@@ -256,6 +286,8 @@ static void *watchdog(void *arg) {
         while ((e = readdir(d))) {
             int tid = atoi(e->d_name);
             if (tid <= 0 || tid == me) continue;
+            { char cp[64], cm[32] = "?"; snprintf(cp, sizeof cp, "/proc/self/task/%d/comm", tid); FILE *cf = fopen(cp, "r"); if (cf) { if (!fgets(cm, sizeof cm, cf)) cm[0] = 0; fclose(cf); } cm[strcspn(cm, "\n")] = 0;
+              fprintf(stderr, "[watchdog] -> tid %d (%s)\n", tid, cm); fflush(stderr); }
             syscall(SYS_tgkill, getpid(), tid, SIGUSR2);
             usleep(400000);
         }
