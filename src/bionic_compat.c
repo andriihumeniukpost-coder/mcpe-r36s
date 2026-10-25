@@ -26,14 +26,36 @@ static void *R(const char *n) {
         if (!glibc_h[i]) glibc_h[i] = dlopen(names[i], RTLD_NOW);
         if (glibc_h[i]) p = dlsym(glibc_h[i], n);
     }
-    if (!p) { fprintf(stderr, "[compat] missing glibc symbol %s\n", n); abort(); }
+    if (!p) { fprintf(stderr, "[compat] missing glibc symbol %s\n", n); _exit(134); }
     return p;
+}
+
+static void report(const char *what, void *ra) {
+    void (*f)(const char *, void *) = dlsym(RTLD_DEFAULT, "host_report");
+    if (f) f(what, ra);
+}
+EXPORT int bc_raise(int sig) {
+    char b[32]; snprintf(b, sizeof b, "raise(%d)", sig); report(b, __builtin_return_address(0));
+    return ((int (*)(int))R("raise"))(sig);
+}
+EXPORT int bc_kill(int pid, int sig) {
+    char b[48]; snprintf(b, sizeof b, "kill(%d,%d)", pid, sig); report(b, __builtin_return_address(0));
+    return ((int (*)(int, int))R("kill"))(pid, sig);
+}
+EXPORT int bc_pthread_kill(unsigned long t, int sig) {
+    char b[48]; snprintf(b, sizeof b, "pthread_kill(%d)", sig); report(b, __builtin_return_address(0));
+    return ((int (*)(unsigned long, int))R("pthread_kill"))(t, sig);
+}
+EXPORT void bc_abort(void) {
+    report("abort()", __builtin_return_address(0));
+    ((void (*)(void))R("abort"))();
+    for (;;) {}
 }
 
 /* ---------------------------------------------------- basic data */
 EXPORT int *__errno(void) { return __errno_location(); }
 EXPORT uintptr_t __stack_chk_guard = 0x5ca1ab1e;
-EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected\n"); abort(); }
+EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected\n"); _exit(134); }
 EXPORT void __google_potentially_blocking_region_begin(void) {}
 EXPORT void __google_potentially_blocking_region_end(void) {}
 EXPORT void (*bsd_signal(int sig, void (*h)(int)))(int) { return signal(sig, h); }

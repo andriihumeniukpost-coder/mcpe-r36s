@@ -24,6 +24,21 @@ JNIEnv *fake_env(void);
 JavaVM *fake_vm(void);
 jobject fake_activity_obj(void);
 
+static void scan_stack(uintptr_t *sp, int words) {
+    for (int i = 0, shown = 0; i < words && shown < 30; i++) {
+        uintptr_t off; const char *w = elf_where(sp[i], &off);
+        if (w) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, w, (unsigned long)off); shown++; }
+    }
+}
+/* called from the bionic-compat shim (raise/abort/kill...) to show who asked for it */
+void host_report(const char *what, void *ra) {
+    uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off);
+    fprintf(stderr, "[trace] %s called from %s+0x%lx (ra=%p)\n", what, w ? w : "?", (unsigned long)off, ra);
+    volatile uintptr_t here = 0;
+    scan_stack((uintptr_t *)&here, 2048);
+    fflush(stderr);
+}
+
 static void crash(int sig, siginfo_t *si, void *uc) {
     void *bt[48];
     fprintf(stderr, "\n[host] CRASH signal %d at address %p\n", sig, si->si_addr);
@@ -36,12 +51,7 @@ static void crash(int sig, siginfo_t *si, void *uc) {
             if (w) fprintf(stderr, "+0x%lx", (unsigned long)off);
             fprintf(stderr, "\n");
         }
-        /* scan the stack for return addresses inside the Android libs */
-        uintptr_t *sp = (uintptr_t *)u->uc_mcontext.arm_sp;
-        for (int i = 0, shown = 0; i < 512 && shown < 24; i++) {
-            uintptr_t off; const char *w = elf_where(sp[i], &off);
-            if (w) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, w, (unsigned long)off); shown++; }
-        }
+        scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 2048);
     }
     int n = backtrace(bt, 48);
     backtrace_symbols_fd(bt, n, 2);
@@ -268,8 +278,8 @@ int main(int argc, char **argv) {
     elf_run_init(game, argc, argv, environ);
     jint (*fmod_onload)(JavaVM *, void *) = elf_sym(fmod, "JNI_OnLoad");
     fprintf(stderr, "[host] calling JNI_OnLoad (fmod=%p game=%p)\n", fmod_onload, JNI_OnLoad_);
-    if (fmod_onload) fmod_onload(fake_vm(), NULL);
-    if (JNI_OnLoad_) JNI_OnLoad_(fake_vm(), NULL);
+    if (fmod_onload) { fprintf(stderr, "[host] fmod JNI_OnLoad...\n"); fmod_onload(fake_vm(), NULL); fprintf(stderr, "[host] fmod JNI_OnLoad returned\n"); }
+    if (JNI_OnLoad_) { fprintf(stderr, "[host] game JNI_OnLoad...\n"); JNI_OnLoad_(fake_vm(), NULL); }
     fprintf(stderr, "[host] JNI_OnLoad done\n");
 
     static ANativeActivity act;

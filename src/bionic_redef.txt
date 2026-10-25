@@ -45,3 +45,7 @@ bc_strtod strtod
 bc_sysconf sysconf
 bc_ungetc ungetc
 bc_vfprintf vfprintf
+bc_raise raise
+bc_kill kill
+bc_pthread_kill pthread_kill
+bc_abort abort
