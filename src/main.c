@@ -44,12 +44,12 @@ static void patch_android_elf(const char *path) {
     unsigned char eh[52];
     if (fread(eh, 1, 52, f) == 52 && eh[0] == 0x7f && eh[1] == 'E' && eh[4] == 1) {
         uint32_t flags = eh[36] | eh[37] << 8 | eh[38] << 16 | (uint32_t)eh[39] << 24;
-        if (flags & 0x200) {
+        if (!(flags & 0x400)) {           /* no EF_ARM_ABI_FLOAT_HARD: soft (0x200) or unmarked */
             flags = (flags & ~0x600u) | 0x400u;
             unsigned char fb[4] = { flags & 0xff, (flags >> 8) & 0xff, (flags >> 16) & 0xff, (flags >> 24) & 0xff };
             fseek(f, 36, SEEK_SET);
             fwrite(fb, 1, 4, f);
-            fprintf(stderr, "[host] patched e_flags (soft->hard marker) in %s\n", path);
+            fprintf(stderr, "[host] patched e_flags (set hard-float marker) in %s\n", path);
         }
         uint32_t phoff = eh[28] | eh[29] << 8 | eh[30] << 16 | (uint32_t)eh[31] << 24;
         unsigned phentsize = eh[42] | eh[43] << 8, phnum = eh[44] | eh[45] << 8;
