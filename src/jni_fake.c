@@ -177,8 +177,9 @@ static void unimpl(void) { fprintf(stderr, "[jni] UNIMPLEMENTED JNIEnv function 
 
 static struct JNINativeInterface_ iface;
 static JNIEnv env_obj = &iface;
-static jint V_Attach(JavaVM *vm, void **penv, void *args) { (void)vm; (void)args; *penv = &env_obj; return JNI_OK; }
-static jint V_GetEnv(JavaVM *vm, void **penv, jint v) { (void)vm; (void)v; *penv = &env_obj; return JNI_OK; }
+JNIEnv *fake_env(void);
+static jint V_Attach(JavaVM *vm, void **penv, void *args) { (void)vm; (void)args; fake_env(); *penv = &env_obj; return JNI_OK; }
+static jint V_GetEnv(JavaVM *vm, void **penv, jint v) { (void)vm; (void)v; fake_env(); *penv = &env_obj; return JNI_OK; }
 static jint V_Detach(JavaVM *vm) { (void)vm; return JNI_OK; }
 static jint V_Destroy(JavaVM *vm) { (void)vm; return JNI_OK; }
 static struct JNIInvokeInterface_ vm_iface = {
