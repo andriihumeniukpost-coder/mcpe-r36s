@@ -16,6 +16,8 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <execinfo.h>
+#include <ucontext.h>
+#include "elf_loader.h"
 
 extern const char *g_assets_root;
 JNIEnv *fake_env(void);
@@ -23,9 +25,24 @@ JavaVM *fake_vm(void);
 jobject fake_activity_obj(void);
 
 static void crash(int sig, siginfo_t *si, void *uc) {
-    (void)uc;
     void *bt[48];
     fprintf(stderr, "\n[host] CRASH signal %d at address %p\n", sig, si->si_addr);
+    {
+        ucontext_t *u = uc; uintptr_t regs[3] = { u->uc_mcontext.arm_pc, u->uc_mcontext.arm_lr, u->uc_mcontext.arm_sp };
+        const char *rn[3] = { "pc", "lr", "sp" };
+        for (int i = 0; i < 3; i++) {
+            uintptr_t off; const char *w = elf_where(regs[i], &off);
+            fprintf(stderr, "[host]   %s = 0x%lx%s%s", rn[i], (unsigned long)regs[i], w ? "  = " : "", w ? w : "");
+            if (w) fprintf(stderr, "+0x%lx", (unsigned long)off);
+            fprintf(stderr, "\n");
+        }
+        /* scan the stack for return addresses inside the Android libs */
+        uintptr_t *sp = (uintptr_t *)u->uc_mcontext.arm_sp;
+        for (int i = 0, shown = 0; i < 512 && shown < 24; i++) {
+            uintptr_t off; const char *w = elf_where(sp[i], &off);
+            if (w) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, w, (unsigned long)off); shown++; }
+        }
+    }
     int n = backtrace(bt, 48);
     backtrace_symbols_fd(bt, n, 2);
     _exit(128 + sig);
@@ -101,7 +118,6 @@ static void *open_via_tmp(const char *path, const char *name, int flags) {
 static void *open_lib(const char *name, int flags) {
     char p[1300];
     snprintf(p, sizeof p, "%s/%s", libdir, name);
-    if (!strcmp(name, "libfmod.so")) patch_android_elf(p);
     void *h = dlopen(p, flags);
     if (!h) {
         fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror());
@@ -169,7 +185,6 @@ static int map_axis(int a) {
 }
 
 int main(int argc, char **argv) {
-    (void)argc;
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
     exe[n] = 0;
@@ -207,18 +222,30 @@ int main(int argc, char **argv) {
     SDL_GL_MakeCurrent(win, NULL); /* the game's render thread will bind it */
 
     /* Shim libraries first, in the order the game lists them */
-    open_lib("libc.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("libm.so", RTLD_NOW | RTLD_LOCAL);
+    void *hc = open_lib("libc.so", RTLD_NOW | RTLD_LOCAL);
+    void *hm = open_lib("libm.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libdl.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("liblog.so", RTLD_NOW | RTLD_LOCAL);
+    void *hlog = open_lib("liblog.so", RTLD_NOW | RTLD_LOCAL);
     void *hand = open_lib("libandroid.so", RTLD_NOW | RTLD_LOCAL);
     void *hegl = open_lib("libEGL.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libGLESv1_CM.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
+    void *hsl = open_lib("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libz.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("libstdc++.so", RTLD_NOW | RTLD_LOCAL);   /* separate step so a failure names the culprit */
-    void *hfmod = open_lib("libfmod.so", RTLD_LAZY | RTLD_LOCAL);
+    void *hcxx = open_lib("libstdc++.so", RTLD_NOW | RTLD_LOCAL);
+    /* symbol lookup order for the Android libs: libm first (float ABI wrappers), then bionic compat, ... */
+    {
+        struct { void *h; const char *n; } r[] = { { hm, "libm.so" }, { hc, "libc.so" }, { hlog, "liblog.so" },
+            { hand, "libandroid.so" }, { hegl, "libEGL.so" }, { hsl, "libOpenSLES.so" }, { hcxx, "libstdc++.so" } };
+        for (unsigned i = 0; i < sizeof r / sizeof *r; i++) {
+            char p[1300]; snprintf(p, sizeof p, "%s/%s", libdir, r[i].n);
+            elf_add_resolver(r[i].h, p);
+        }
+    }
+    char fmodpath[1300];
+    snprintf(fmodpath, sizeof fmodpath, "%s/libfmod.so", libdir);
+    ElfLib *fmod = elf_load(fmodpath, "libfmod.so");
+    if (!fmod) { fprintf(stderr, "[host] cannot load libfmod.so\n"); return 1; }
 
     *(void **)need(hegl, "shim_egl_window") = win;
     *(void **)need(hegl, "shim_egl_ctx") = ctx;
@@ -229,21 +256,21 @@ int main(int argc, char **argv) {
 
     char gamepath[1300];
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
-    patch_android_elf(gamepath);
-    void *game = dlopen(gamepath, RTLD_LAZY | RTLD_DEEPBIND);
-    if (!game) {
-        fprintf(stderr, "[host] dlopen(game) failed: %s\n", dlerror());
-        game = open_via_tmp(gamepath, "libminecraftpe.so", RTLD_LAZY | RTLD_DEEPBIND);
-    }
-    if (!game) { fprintf(stderr, "[host] cannot load game: %s\n", dlerror()); return 1; }
+    ElfLib *game = elf_load(gamepath, "libminecraftpe.so");
+    if (!game) { fprintf(stderr, "[host] cannot load game\n"); return 1; }
     fprintf(stderr, "[host] libminecraftpe.so loaded\n");
 
-    jint (*JNI_OnLoad_)(JavaVM *, void *) = dlsym(game, "JNI_OnLoad");
-    void (*ANativeActivity_onCreate_)(ANativeActivity *, void *, size_t) = need(game, "ANativeActivity_onCreate");
-    /* Android calls JNI_OnLoad on System.loadLibrary; glibc does not, so do it ourselves */
-    jint (*fmod_onload)(JavaVM *, void *) = dlsym(hfmod, "JNI_OnLoad");
+    jint (*JNI_OnLoad_)(JavaVM *, void *) = elf_sym(game, "JNI_OnLoad");
+    void (*ANativeActivity_onCreate_)(ANativeActivity *, void *, size_t) = elf_sym(game, "ANativeActivity_onCreate");
+    if (!ANativeActivity_onCreate_) { fprintf(stderr, "[host] missing symbol ANativeActivity_onCreate\n"); return 1; }
+    /* Android's linker runs constructors on load; JNI_OnLoad on System.loadLibrary */
+    elf_run_init(fmod, argc, argv, environ);
+    elf_run_init(game, argc, argv, environ);
+    jint (*fmod_onload)(JavaVM *, void *) = elf_sym(fmod, "JNI_OnLoad");
+    fprintf(stderr, "[host] calling JNI_OnLoad (fmod=%p game=%p)\n", fmod_onload, JNI_OnLoad_);
     if (fmod_onload) fmod_onload(fake_vm(), NULL);
     if (JNI_OnLoad_) JNI_OnLoad_(fake_vm(), NULL);
+    fprintf(stderr, "[host] JNI_OnLoad done\n");
 
     static ANativeActivity act;
     act.callbacks = calloc(1, sizeof *act.callbacks);

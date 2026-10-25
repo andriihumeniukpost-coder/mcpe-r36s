@@ -16,8 +16,8 @@ $(B)/libs $(B)/obj:
 	mkdir -p $@
 
 # host launcher (also contains the fake JVM)
-$(B)/mcpe: src/main.c src/jni_fake.c include/stb_image.h | $(B)
-	$(CC) $(CFLAGS) -o $@ src/main.c src/jni_fake.c $(shell $(SDLCFG) --libs) -ldl -lpthread -lm \
+$(B)/mcpe: src/main.c src/jni_fake.c src/elf_loader.c src/elf_loader.h include/stb_image.h | $(B)
+	$(CC) $(CFLAGS) -rdynamic -o $@ src/main.c src/jni_fake.c src/elf_loader.c $(shell $(SDLCFG) --libs) -ldl -lpthread -lm \
 	      -Wl,--no-as-needed -lgcc_s
 $(B):
 	mkdir -p $@
