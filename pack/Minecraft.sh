@@ -70,6 +70,10 @@ echo "== starting"
 ./mcpe
 RC=$?
 echo "== mcpe exited with code $RC"
+if [ $RC -eq 1 ]; then
+  echo "== load failed; re-running with loader trace (tail)"
+  LD_DEBUG=files,libs ./mcpe 2>&1 | grep -v "^ *[0-9]*:\s*$" | tail -80
+fi
 [ -n "$GPTOKEYB" ] && kill %1 2>/dev/null
 # keep the message on screen briefly instead of flashing away
 [ $RC -ne 0 ] && sleep 5

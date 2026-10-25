@@ -31,9 +31,34 @@ static void crash(int sig, siginfo_t *si, void *uc) {
 
 static char base[1024], libdir[1100], datadir[1100], assetdir[1100];
 
+/* Android libs carry PT_INTERP=/system/bin/linker; neutralise it (PT_NULL) so glibc's loader ignores it. */
+static void patch_interp(const char *path) {
+    FILE *f = fopen(path, "r+b");
+    if (!f) return;
+    unsigned char eh[52];
+    if (fread(eh, 1, 52, f) == 52 && eh[0] == 0x7f && eh[1] == 'E' && eh[4] == 1) {
+        uint32_t phoff = eh[28] | eh[29] << 8 | eh[30] << 16 | (uint32_t)eh[31] << 24;
+        unsigned phentsize = eh[42] | eh[43] << 8, phnum = eh[44] | eh[45] << 8;
+        for (unsigned i = 0; i < phnum; i++) {
+            long off = (long)phoff + (long)i * phentsize;
+            unsigned char t[4];
+            fseek(f, off, SEEK_SET);
+            if (fread(t, 1, 4, f) != 4) break;
+            if (t[0] == 3 && !t[1] && !t[2] && !t[3]) {   /* PT_INTERP */
+                unsigned char z[4] = {0, 0, 0, 0};
+                fseek(f, off, SEEK_SET);
+                fwrite(z, 1, 4, f);
+                fprintf(stderr, "[host] patched PT_INTERP in %s\n", path);
+            }
+        }
+    }
+    fclose(f);
+}
+
 static void *open_lib(const char *name, int flags) {
     char p[1300];
     snprintf(p, sizeof p, "%s/%s", libdir, name);
+    if (!strcmp(name, "libfmod.so")) patch_interp(p);
     void *h = dlopen(p, flags);
     if (!h) { fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror()); exit(1); }
     return h;
@@ -155,6 +180,7 @@ int main(int argc, char **argv) {
 
     char gamepath[1300];
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
+    patch_interp(gamepath);
     void *game = dlopen(gamepath, RTLD_LAZY | RTLD_DEEPBIND);
     if (!game) { fprintf(stderr, "[host] cannot load game: %s\n", dlerror()); return 1; }
     fprintf(stderr, "[host] libminecraftpe.so loaded\n");
