@@ -12,6 +12,8 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <errno.h>
+#include <sys/syscall.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -278,6 +280,7 @@ EXPORT int bc_pthread_mutexattr_destroy(int *a) { (void)a; return 0; }
 EXPORT int bc_pthread_mutexattr_settype(int *a, int t) { *a = t; return 0; }
 EXPORT int bc_pthread_mutexattr_gettype(const int *a, int *t) { *t = *a; return 0; }
 EXPORT int bc_pthread_mutex_init(void *m, const int *a) {
+    { static int n; if (n < 40) { n++; fprintf(stderr, "[mutex] init word=%p type=%d\n", m, a ? *a : 0); } }
     *(volatile uintptr_t *)m = 0;
     hmutex(m, a ? *a : 0);
     return 0;
@@ -290,7 +293,21 @@ EXPORT int bc_pthread_mutex_destroy(void *m) {
 }
 /* The glibc symbols are shadowed by these names, so reach them via R(). */
 #define REAL_MX(fn) ({ static int (*p)(pthread_mutex_t *); if (!p) p = R(fn); p; })
-EXPORT int bc_pthread_mutex_lock(void *m) { return REAL_MX("pthread_mutex_lock")(hmutex(m, -1)); }
+#include <sys/syscall.h>
+EXPORT int bc_pthread_mutex_lock(void *m) {
+    pthread_mutex_t *h = hmutex(m, -1);
+    int r = REAL_MX("pthread_mutex_trylock")(h);
+    if (r == 0) return 0;
+    if (r == EBUSY) {
+        static int n;
+        if (n < 20) {
+            n++;
+            fprintf(stderr, "[mutex] tid=%ld contended lock word=%p h=%p owner_tid=%d count=%d\n", syscall(SYS_gettid), m, (void *)h, ((int *)h)[2], ((int *)h)[1]);
+            report("mutex_lock contended", __builtin_return_address(0));
+        }
+    }
+    return REAL_MX("pthread_mutex_lock")(h);
+}
 EXPORT int bc_pthread_mutex_unlock(void *m) { return REAL_MX("pthread_mutex_unlock")(hmutex(m, -1)); }
 EXPORT int bc_pthread_mutex_trylock(void *m) { return REAL_MX("pthread_mutex_trylock")(hmutex(m, -1)); }
 
@@ -303,7 +320,12 @@ EXPORT int bc_pthread_cond_destroy(void *c) {
 }
 EXPORT int bc_pthread_cond_signal(void *c) { int (*r)(pthread_cond_t *) = R("pthread_cond_signal"); return r(hcond(c)); }
 EXPORT int bc_pthread_cond_broadcast(void *c) { int (*r)(pthread_cond_t *) = R("pthread_cond_broadcast"); return r(hcond(c)); }
-EXPORT int bc_pthread_cond_wait(void *c, void *m) { int (*r)(pthread_cond_t *, pthread_mutex_t *) = R("pthread_cond_wait"); return r(hcond(c), hmutex(m, -1)); }
+EXPORT int bc_pthread_cond_wait(void *c, void *m) {
+    int (*r)(pthread_cond_t *, pthread_mutex_t *) = R("pthread_cond_wait");
+    pthread_mutex_t *h = hmutex(m, -1);
+    { static int n; if (n < 10) { n++; fprintf(stderr, "[cond] tid=%ld wait cond=%p mutex=%p h=%p owner_tid=%d\n", syscall(SYS_gettid), c, m, (void *)h, ((int *)h)[2]); } }
+    return r(hcond(c), h);
+}
 EXPORT int bc_pthread_cond_timedwait(void *c, void *m, const struct timespec *t) {
     int (*r)(pthread_cond_t *, pthread_mutex_t *, const struct timespec *) = R("pthread_cond_timedwait");
     return r(hcond(c), hmutex(m, -1), t);
