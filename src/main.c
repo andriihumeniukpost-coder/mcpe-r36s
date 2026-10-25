@@ -51,6 +51,17 @@ static void crash(int sig, siginfo_t *si, void *uc) {
             if (w) fprintf(stderr, "+0x%lx", (unsigned long)off);
             fprintf(stderr, "\n");
         }
+        fprintf(stderr, "[host]   si_code=%d fault_address=0x%lx\n", si->si_code, (unsigned long)u->uc_mcontext.fault_address);
+        fprintf(stderr, "[host]   r0=%lx r1=%lx r2=%lx r3=%lx r4=%lx r5=%lx r6=%lx r7=%lx r8=%lx r9=%lx r10=%lx fp=%lx ip=%lx\n",
+                u->uc_mcontext.arm_r0, u->uc_mcontext.arm_r1, u->uc_mcontext.arm_r2, u->uc_mcontext.arm_r3, u->uc_mcontext.arm_r4,
+                u->uc_mcontext.arm_r5, u->uc_mcontext.arm_r6, u->uc_mcontext.arm_r7, u->uc_mcontext.arm_r8, u->uc_mcontext.arm_r9,
+                u->uc_mcontext.arm_r10, u->uc_mcontext.arm_fp, u->uc_mcontext.arm_ip);
+        Dl_info di;
+        for (int i = 0; i < 2; i++) {
+            if (dladdr((void *)regs[i], &di))
+                fprintf(stderr, "[host]   %s in %s (%s) %s+0x%lx\n", rn[i], di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "?",
+                        di.dli_sname ? "sym" : "base", (unsigned long)(regs[i] - (uintptr_t)(di.dli_sname ? di.dli_saddr : di.dli_fbase)));
+        }
         scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 2048);
     }
     int n = backtrace(bt, 48);
