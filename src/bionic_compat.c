@@ -294,7 +294,13 @@ EXPORT int bc_pthread_mutex_destroy(void *m) {
 /* The glibc symbols are shadowed by these names, so reach them via R(). */
 #define REAL_MX(fn) ({ static int (*p)(pthread_mutex_t *); if (!p) p = R(fn); p; })
 #include <sys/syscall.h>
+static void lockwatch(const char *what, void *m, void *ra) {
+    static void (*f)(const char *, void *, void *); static int tried;
+    if (!tried) { tried = 1; f = dlsym(RTLD_DEFAULT, "host_lockwatch"); }
+    if (f) f(what, m, ra);
+}
 EXPORT int bc_pthread_mutex_lock(void *m) {
+    lockwatch("lock", m, __builtin_return_address(0));
     pthread_mutex_t *h = hmutex(m, -1);
     int r = REAL_MX("pthread_mutex_trylock")(h);
     if (r == 0) return 0;
@@ -308,7 +314,7 @@ EXPORT int bc_pthread_mutex_lock(void *m) {
     }
     return REAL_MX("pthread_mutex_lock")(h);
 }
-EXPORT int bc_pthread_mutex_unlock(void *m) { return REAL_MX("pthread_mutex_unlock")(hmutex(m, -1)); }
+EXPORT int bc_pthread_mutex_unlock(void *m) { lockwatch("unlock", m, __builtin_return_address(0)); return REAL_MX("pthread_mutex_unlock")(hmutex(m, -1)); }
 EXPORT int bc_pthread_mutex_trylock(void *m) { return REAL_MX("pthread_mutex_trylock")(hmutex(m, -1)); }
 
 EXPORT int bc_pthread_cond_init(void *c, const void *a) { (void)a; *(volatile uintptr_t *)c = 0; hcond(c); return 0; }

@@ -42,6 +42,15 @@ static void scan_stack(uintptr_t *sp, int words) {
         }
     }
 }
+/* lock tracing for mutexes that live inside the Android libs' data (static mutexes) */
+void host_lockwatch(const char *what, void *word, void *ra) {
+    static volatile int n;
+    uintptr_t off, roff; const char *w = elf_where((uintptr_t)word, &off);
+    if (!w || n > 120) return;
+    n++;
+    const char *rw = elf_where((uintptr_t)ra, &roff);
+    fprintf(stderr, "[lock] tid=%d %s word=%s+0x%lx from %s+0x%lx\n", (int)syscall(SYS_gettid), what, w, (unsigned long)off, rw ? rw : "?", (unsigned long)roff);
+}
 /* called from the bionic-compat shim (raise/abort/kill...) to show who asked for it */
 void host_report(const char *what, void *ra) {
     uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off);
