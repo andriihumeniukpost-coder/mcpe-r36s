@@ -333,7 +333,7 @@ void elf_run_init(ElfLib *l, int argc, char **argv, char **envp) {
 /* Describe an address as "lib+0xoffset" for crash reports. */
 const char *elf_where(uintptr_t addr, uintptr_t *off) {
     for (ElfLib *l = libs_head; l; l = l->next)
-        if (addr >= (uintptr_t)l->base && addr < (uintptr_t)l->base + l->size + 0x10000000u) {
+        if (addr >= (uintptr_t)l->base) {
             for (int i = 0; i < l->phnum; i++) {
                 const Elf32_Phdr *p = &l->phdr[i];
                 if (p->p_type == PT_LOAD && addr >= (uintptr_t)l->base + p->p_vaddr && addr < (uintptr_t)l->base + p->p_vaddr + p->p_memsz) {
