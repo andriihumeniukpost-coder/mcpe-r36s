@@ -1,35 +1,81 @@
 #!/bin/bash
-# PortMaster-style launcher for ArkOS (R36S). Place the folder `mcpe/` next to this script.
+# PortMaster-style launcher for ArkOS (R36S). Folder `mcpe/` must sit next to this script.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+GAMEDIR="$HERE/mcpe"
+LOG="$GAMEDIR/log.txt"
+mkdir -p "$GAMEDIR" 2>/dev/null
+# everything below is logged, even early failures
+exec > "$LOG" 2>&1
+echo "== launcher $(date)"
+echo "== uname: $(uname -a)"
+echo "== script dir: $HERE"
+fail() { echo "FATAL: $*"; sleep 8; exit 1; }
+
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
-if [ -d "/opt/system/Tools/PortMaster/" ]; then controlfolder="/opt/system/Tools/PortMaster"
-elif [ -d "/opt/tools/PortMaster/" ]; then controlfolder="/opt/tools/PortMaster"
-elif [ -d "$XDG_DATA_HOME/PortMaster/" ]; then controlfolder="$XDG_DATA_HOME/PortMaster"
-else controlfolder="/roms/ports/PortMaster"; fi
+for d in /opt/system/Tools/PortMaster /opt/tools/PortMaster "$XDG_DATA_HOME/PortMaster" /roms/ports/PortMaster; do
+  [ -d "$d" ] && { controlfolder="$d"; break; }
+done
+echo "== PortMaster: ${controlfolder:-none}"
 [ -f "$controlfolder/control.txt" ] && source "$controlfolder/control.txt"
 
-GAMEDIR="$(cd "$(dirname "$0")/mcpe" && pwd)"
-cd "$GAMEDIR"
-exec > "$GAMEDIR/log.txt" 2>&1
+cd "$GAMEDIR" || fail "no $GAMEDIR"
+chmod +x ./mcpe 2>/dev/null          # zip extraction on iPad/Windows drops the exec bit
+[ -f ./mcpe ] || fail "mcpe binary missing in $GAMEDIR"
+echo "== files:"; ls -la "$GAMEDIR" "$GAMEDIR/libs" 2>&1 | head -40
 
-# First run: unpack game files from the APK that the user put next to the launcher
+# 32-bit ARM support present?
+[ -e /lib/ld-linux-armhf.so.3 ] || [ -e /lib32/ld-linux-armhf.so.3 ] || [ -e /usr/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3 ] \
+  || echo "WARNING: no armhf dynamic loader found - 32-bit binaries may not run on this system"
+
+# First run: unpack game files from the APK placed next to the launcher
 if [ ! -f libs/libminecraftpe.so ]; then
   APK=$(ls "$GAMEDIR"/*.apk 2>/dev/null | head -1)
-  [ -n "$APK" ] || { echo "Put minecraft-0-16-0.apk into $GAMEDIR"; exit 1; }
-  unzip -o -j "$APK" "lib/armeabi-v7a/libminecraftpe.so" "lib/armeabi-v7a/libfmod.so" -d libs
-  unzip -o "$APK" "assets/*" -d "$GAMEDIR"
+  [ -n "$APK" ] || fail "put minecraft-0-16-0.apk into $GAMEDIR"
+  echo "== extracting $APK"
+  if command -v unzip >/dev/null; then
+    unzip -o -j "$APK" "lib/armeabi-v7a/libminecraftpe.so" "lib/armeabi-v7a/libfmod.so" -d libs || fail "unzip libs failed"
+    unzip -o -q "$APK" "assets/*" -d "$GAMEDIR" || fail "unzip assets failed"
+  elif command -v python3 >/dev/null; then
+    python3 - "$APK" "$GAMEDIR" <<'PY' || fail "python unzip failed"
+import sys, zipfile, os
+apk, out = sys.argv[1:3]
+z = zipfile.ZipFile(apk)
+os.makedirs(out + "/libs", exist_ok=True)
+for n in z.namelist():
+    if n in ("lib/armeabi-v7a/libminecraftpe.so", "lib/armeabi-v7a/libfmod.so"):
+        open(out + "/libs/" + os.path.basename(n), "wb").write(z.read(n))
+    elif n.startswith("assets/") and not n.endswith("/"):
+        p = os.path.join(out, n); os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(z.read(n))
+PY
+  else
+    fail "neither unzip nor python3 available - extract the APK on a PC (see README)"
+  fi
 fi
+[ -f libs/libminecraftpe.so ] || fail "libs/libminecraftpe.so missing"
 
-# Android-style names for the system libraries (32-bit armhf)
-LIBSYS=/usr/lib/arm-linux-gnueabihf
-[ -d "$LIBSYS" ] || LIBSYS=/usr/lib32
-ln -sf "$LIBSYS/libGLESv2.so.2"  libs/libGLESv2.so
-ln -sf "$LIBSYS/libz.so.1"       libs/libz.so
-ln -sf "$LIBSYS/libstdc++.so.6"  libs/libstdc++.so
+# Android-style names for system libraries (32-bit armhf)
+LIBSYS=""
+for d in /usr/lib/arm-linux-gnueabihf /usr/lib32 /lib/arm-linux-gnueabihf; do [ -d "$d" ] && { LIBSYS="$d"; break; }; done
+echo "== 32-bit lib dir: ${LIBSYS:-NOT FOUND}"
+link() { for f in "$@"; do [ -e "$LIBSYS/$f" ] && return 0; done; return 1; }
+for pair in "libGLESv2.so:libGLESv2.so.2" "libz.so:libz.so.1" "libstdc++.so:libstdc++.so.6"; do
+  dst=${pair%%:*}; src=${pair##*:}
+  if [ -n "$LIBSYS" ] && [ -e "$LIBSYS/$src" ]; then ln -sf "$LIBSYS/$src" "libs/$dst"; else echo "WARNING: $src not found in $LIBSYS"; fi
+done
 
 export LD_LIBRARY_PATH="$GAMEDIR/libs:$LIBSYS:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG_FILE="$controlfolder/gamecontrollerdb.txt"
-export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+[ -n "$sdl_controllerconfig" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
+export LD_DEBUG_OUTPUT=
+echo "== ldd mcpe:"; ldd ./mcpe 2>&1 | head -30
 
-$GPTOKEYB "mcpe" &   # optional, ignored if absent
+[ -n "$GPTOKEYB" ] && { $GPTOKEYB "mcpe" & }
+echo "== starting"
 ./mcpe
-kill %1 2>/dev/null
+RC=$?
+echo "== mcpe exited with code $RC"
+[ -n "$GPTOKEYB" ] && kill %1 2>/dev/null
+# keep the message on screen briefly instead of flashing away
+[ $RC -ne 0 ] && sleep 5
+exit $RC

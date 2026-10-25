@@ -12,11 +12,22 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <signal.h>
+#include <execinfo.h>
 
 extern const char *g_assets_root;
 JNIEnv *fake_env(void);
 JavaVM *fake_vm(void);
 jobject fake_activity_obj(void);
+
+static void crash(int sig, siginfo_t *si, void *uc) {
+    (void)uc;
+    void *bt[48];
+    fprintf(stderr, "\n[host] CRASH signal %d at address %p\n", sig, si->si_addr);
+    int n = backtrace(bt, 48);
+    backtrace_symbols_fd(bt, n, 2);
+    _exit(128 + sig);
+}
 
 static char base[1024], libdir[1100], datadir[1100], assetdir[1100];
 
@@ -95,6 +106,10 @@ int main(int argc, char **argv) {
     mkdir(datadir, 0755);
     g_assets_root = assetdir;
     setvbuf(stderr, NULL, _IONBF, 0);
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = crash; sa.sa_flags = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
+    fprintf(stderr, "[host] start, base=%s\n", base);
     (void)argv;
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) != 0) {
