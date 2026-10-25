@@ -76,12 +76,13 @@ static void log_once(const char *kind, const char *name, const char *sig) {
     static const char *seen[256]; static int ns;
     for (int i = 0; i < ns; i++) if (seen[i] == name) return;
     if (ns < 256) seen[ns++] = name;
-    fprintf(stderr, "[jni] unhandled %s %s %s\n", kind, name, sig);
+    fprintf(stderr, "[jni] %s %s %s\n", kind, name, sig);
 }
 
 static JV run(meth *m, jvalue *a) {
     JV r; memset(&r, 0, sizeof r);
     const char *n = m->name;
+    log_once("call", n, m->sig);
     if (!strcmp(n, "getDateString")) { char b[64]; time_t t = time(NULL); strftime(b, sizeof b, "%Y-%m-%d", localtime(&t)); r.l = mkstr(b); }
     else if (!strcmp(n, "getImageData") && a[0].l) r.l = java_getImageData(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "getFileDataBytes") && a[0].l) r.l = java_getFileDataBytes(((jobj *)a[0].l)->str);
@@ -133,7 +134,7 @@ static void C_VoidA(JNIEnv *e, jobject o, jmethodID m, const jvalue *args) { (vo
 
 /* ------------------------------------------------ misc JNI calls */
 static jint J_GetVersion(JNIEnv *e) { (void)e; return JNI_VERSION_1_6; }
-static jclass J_FindClass(JNIEnv *e, const char *n) { (void)e; return (jclass)mk(K_CLASS, strdup(n)); }
+static jclass J_FindClass(JNIEnv *e, const char *n) { (void)e; fprintf(stderr, "[jni] FindClass %s\n", n); return (jclass)mk(K_CLASS, strdup(n)); }
 static jclass J_GetObjectClass(JNIEnv *e, jobject o) { (void)e; (void)o; return (jclass)mk(K_CLASS, "java/lang/Object"); }
 static jmethodID J_GetMethodID(JNIEnv *e, jclass c, const char *n, const char *s) { (void)e; (void)c; meth *m = malloc(sizeof *m); m->name = strdup(n); m->sig = strdup(s); return (jmethodID)m; }
 static jobject J_NewGlobalRef(JNIEnv *e, jobject o) { (void)e; return o; }
@@ -173,7 +174,7 @@ static jobject J_GetStaticObjectField(JNIEnv *e, jclass c, jfieldID f) {
 }
 static jint J_RegisterNatives(JNIEnv *e, jclass c, const JNINativeMethod *m, jint n) { (void)e; (void)c; (void)m; (void)n; return 0; }
 
-static void unimpl(void) { fprintf(stderr, "[jni] UNIMPLEMENTED JNIEnv function called\n"); }
+#include "jni_slots.h"
 
 static struct JNINativeInterface_ iface;
 static JNIEnv env_obj = &iface;
@@ -193,7 +194,7 @@ JNIEnv *fake_env(void) {
     static int init;
     if (!init) {
         void **t = (void **)&iface;
-        for (size_t i = 0; i < sizeof iface / sizeof(void *); i++) t[i] = (void *)unimpl;
+        for (size_t i = 0; i < sizeof iface / sizeof(void *) && i < sizeof jni_unimpl_fns / sizeof(void *); i++) t[i] = jni_unimpl_fns[i];
         iface.GetVersion = J_GetVersion;
         iface.FindClass = J_FindClass;
         iface.GetObjectClass = J_GetObjectClass;

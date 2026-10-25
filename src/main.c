@@ -212,6 +212,54 @@ static int map_axis(int a) {
     }
 }
 
+/* ---- hang diagnostics: after a few seconds every thread prints where it is */
+#include <sys/syscall.h>
+#include <dirent.h>
+#include <pthread.h>
+static volatile int dump_lock;
+static void usr2(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)si;
+    while (__sync_lock_test_and_set(&dump_lock, 1)) {}
+    ucontext_t *u = uc; int tid = (int)syscall(SYS_gettid);
+    char path[64], comm[32] = "?";
+    snprintf(path, sizeof path, "/proc/self/task/%d/comm", tid);
+    FILE *f = fopen(path, "r"); if (f) { if (!fgets(comm, sizeof comm, f)) comm[0] = 0; fclose(f); }
+    comm[strcspn(comm, "\n")] = 0;
+    uintptr_t pc = u->uc_mcontext.arm_pc, lr = u->uc_mcontext.arm_lr, off;
+    const char *w = elf_where(pc, &off); Dl_info di;
+    fprintf(stderr, "[watchdog] thread %d (%s): pc=0x%lx", tid, comm, (unsigned long)pc);
+    if (w) fprintf(stderr, " %s+0x%lx", w, (unsigned long)off);
+    else if (dladdr((void *)pc, &di) && di.dli_fname) fprintf(stderr, " %s:%s+0x%lx", strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname,
+             di.dli_sname ? di.dli_sname : "?", (unsigned long)(pc - (uintptr_t)(di.dli_saddr ? di.dli_saddr : di.dli_fbase)));
+    w = elf_where(lr, &off);
+    fprintf(stderr, "  lr=0x%lx", (unsigned long)lr);
+    if (w) fprintf(stderr, " %s+0x%lx", w, (unsigned long)off);
+    fprintf(stderr, "\n");
+    scan_stack((uintptr_t *)u->uc_mcontext.arm_sp, 1500);
+    fflush(stderr);
+    __sync_lock_release(&dump_lock);
+}
+static void *watchdog(void *arg) {
+    (void)arg;
+    static const int when[] = { 8, 12, 25 };
+    int slept = 0;
+    for (unsigned k = 0; k < sizeof when / sizeof *when; k++) {
+        sleep(when[k] - slept); slept = when[k];
+        fprintf(stderr, "[watchdog] %ds after start - thread dump\n", when[k]);
+        DIR *d = opendir("/proc/self/task");
+        if (!d) continue;
+        struct dirent *e; int me = (int)syscall(SYS_gettid);
+        while ((e = readdir(d))) {
+            int tid = atoi(e->d_name);
+            if (tid <= 0 || tid == me) continue;
+            syscall(SYS_tgkill, getpid(), tid, SIGUSR2);
+            usleep(400000);
+        }
+        closedir(d);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
@@ -225,6 +273,7 @@ int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = crash; sa.sa_flags = SA_SIGINFO;
+    { struct sigaction s2; memset(&s2, 0, sizeof s2); s2.sa_sigaction = usr2; s2.sa_flags = SA_SIGINFO | SA_RESTART; sigaction(SIGUSR2, &s2, NULL); }
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
     fprintf(stderr, "[host] start, base=%s\n", base);
     (void)argv;
@@ -300,6 +349,7 @@ int main(int argc, char **argv) {
     if (JNI_OnLoad_) { fprintf(stderr, "[host] game JNI_OnLoad...\n"); JNI_OnLoad_(fake_vm(), NULL); }
     fprintf(stderr, "[host] JNI_OnLoad done\n");
 
+    { pthread_t wt; pthread_create(&wt, NULL, watchdog, NULL); pthread_detach(wt); }
     static ANativeActivity act;
     act.callbacks = calloc(1, sizeof *act.callbacks);
     act.vm = fake_vm(); act.env = fake_env(); act.clazz = fake_activity_obj();
