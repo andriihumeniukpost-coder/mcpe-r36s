@@ -126,7 +126,11 @@ int dl_iterate_phdr(int (*cb)(struct dl_phdr_info *, size_t, void *), void *data
     return 0;
 }
 
+static void h_assert2(const char *file, int line, const char *func, const char *expr) {
+    fprintf(stderr, "[game] ASSERT FAILED %s:%d (%s): %s\n", file, line, func, expr); fflush(stderr); abort();
+}
 static const struct { const char *name; void *addr; } host_syms[] = {
+    { "__assert2", (void *)h_assert2 },
     { "__aeabi_atexit", (void *)h_aeabi_atexit },
     { "sigsetjmp", (void *)host_sigsetjmp },
     { "getaddrinfo", (void *)h_getaddrinfo },

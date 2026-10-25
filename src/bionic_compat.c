@@ -17,10 +17,15 @@
 #include <sys/stat.h>
 #include <time.h>
 
-static void *libc_h;
+static void *glibc_h[5];
 static void *R(const char *n) {
-    if (!libc_h) libc_h = dlopen("libc.so.6", RTLD_NOW);
-    void *p = dlsym(libc_h, n);
+    /* glibc < 2.34 keeps pthread_* in libpthread.so.0 */
+    static const char *names[5] = { "libc.so.6", "libpthread.so.0", "libdl.so.2", "libm.so.6", "librt.so.1" };
+    void *p = NULL;
+    for (int i = 0; i < 5 && !p; i++) {
+        if (!glibc_h[i]) glibc_h[i] = dlopen(names[i], RTLD_NOW);
+        if (glibc_h[i]) p = dlsym(glibc_h[i], n);
+    }
     if (!p) { fprintf(stderr, "[compat] missing glibc symbol %s\n", n); abort(); }
     return p;
 }
