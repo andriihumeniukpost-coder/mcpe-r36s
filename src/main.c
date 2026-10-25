@@ -33,12 +33,24 @@ static void crash(int sig, siginfo_t *si, void *uc) {
 
 static char base[1024], libdir[1100], datadir[1100], assetdir[1100];
 
-/* Android libs carry PT_INTERP=/system/bin/linker; neutralise it (PT_NULL) so glibc's loader ignores it. */
-static void patch_interp(const char *path) {
+/* Android libs carry PT_INTERP=/system/bin/linker and a soft-float ELF flag. glibc's loader rejects such
+ * files silently (reported as "No such file or directory"), so neutralise both in our copy:
+ *  - PT_INTERP -> PT_NULL
+ *  - e_flags: EF_ARM_ABI_FLOAT_SOFT -> EF_ARM_ABI_FLOAT_HARD (metadata only; the code still uses the soft ABI,
+ *    which is why every call across the boundary goes through our SOFT-annotated wrappers). */
+static void patch_android_elf(const char *path) {
     FILE *f = fopen(path, "r+b");
     if (!f) return;
     unsigned char eh[52];
     if (fread(eh, 1, 52, f) == 52 && eh[0] == 0x7f && eh[1] == 'E' && eh[4] == 1) {
+        uint32_t flags = eh[36] | eh[37] << 8 | eh[38] << 16 | (uint32_t)eh[39] << 24;
+        if (flags & 0x200) {
+            flags = (flags & ~0x600u) | 0x400u;
+            unsigned char fb[4] = { flags & 0xff, (flags >> 8) & 0xff, (flags >> 16) & 0xff, (flags >> 24) & 0xff };
+            fseek(f, 36, SEEK_SET);
+            fwrite(fb, 1, 4, f);
+            fprintf(stderr, "[host] patched e_flags (soft->hard marker) in %s\n", path);
+        }
         uint32_t phoff = eh[28] | eh[29] << 8 | eh[30] << 16 | (uint32_t)eh[31] << 24;
         unsigned phentsize = eh[42] | eh[43] << 8, phnum = eh[44] | eh[45] << 8;
         for (unsigned i = 0; i < phnum; i++) {
@@ -61,10 +73,13 @@ static void diag_file(const char *p) {
     struct stat st;
     if (stat(p, &st)) { fprintf(stderr, "[diag] stat(%s) failed: %s\n", p, strerror(errno)); return; }
     int fd = open(p, O_RDONLY);
-    unsigned char h[20] = {0};
+    unsigned char h[52] = {0};
     ssize_t n = fd >= 0 ? read(fd, h, sizeof h) : -1;
-    fprintf(stderr, "[diag] %s size=%lld mode=%o open=%s read=%zd magic=%02x %c%c%c class=%d machine=%d\n", p,
-            (long long)st.st_size, st.st_mode, fd >= 0 ? "ok" : strerror(errno), n, h[0], h[1], h[2], h[3], h[4], h[18] | h[19] << 8);
+    fprintf(stderr, "[diag] %s size=%lld open=%s read=%zd class=%d data=%d osabi=%d abiver=%d type=%d machine=%d "
+            "version=%u flags=0x%x phentsize=%d phnum=%d\n", p, (long long)st.st_size, fd >= 0 ? "ok" : strerror(errno), n,
+            h[4], h[5], h[7], h[8], h[16] | h[17] << 8, h[18] | h[19] << 8,
+            h[20] | h[21] << 8 | h[22] << 16 | (unsigned)h[23] << 24,
+            h[36] | h[37] << 8 | h[38] << 16 | (unsigned)h[39] << 24, h[42] | h[43] << 8, h[44] | h[45] << 8);
     if (fd >= 0) close(fd);
 }
 
@@ -86,11 +101,12 @@ static void *open_via_tmp(const char *path, const char *name, int flags) {
 static void *open_lib(const char *name, int flags) {
     char p[1300];
     snprintf(p, sizeof p, "%s/%s", libdir, name);
-    if (!strcmp(name, "libfmod.so")) patch_interp(p);
+    if (!strcmp(name, "libfmod.so")) patch_android_elf(p);
     void *h = dlopen(p, flags);
     if (!h) {
         fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror());
         diag_file(p);
+        { char q[1300]; snprintf(q, sizeof q, "%s/libOpenSLES.so", libdir); diag_file(q); }
         h = open_via_tmp(p, name, flags);
         if (!h) exit(1);
     }
@@ -213,7 +229,7 @@ int main(int argc, char **argv) {
 
     char gamepath[1300];
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
-    patch_interp(gamepath);
+    patch_android_elf(gamepath);
     void *game = dlopen(gamepath, RTLD_LAZY | RTLD_DEEPBIND);
     if (!game) {
         fprintf(stderr, "[host] dlopen(game) failed: %s\n", dlerror());
