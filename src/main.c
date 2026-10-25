@@ -68,12 +68,32 @@ static void diag_file(const char *p) {
     if (fd >= 0) close(fd);
 }
 
+/* Fallback: copy a library to tmpfs and dlopen it from there (SD-card filesystems can be odd). */
+static void *open_via_tmp(const char *path, const char *name, int flags) {
+    char dst[256];
+    snprintf(dst, sizeof dst, "/tmp/mcpe_%s", name);
+    FILE *in = fopen(path, "rb"), *out = fopen(dst, "wb");
+    if (!in || !out) { fprintf(stderr, "[host] tmp copy failed (%s)\n", strerror(errno)); if (in) fclose(in); if (out) fclose(out); return NULL; }
+    char buf[65536]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+    fclose(in); fclose(out);
+    chmod(dst, 0755);
+    void *h = dlopen(dst, flags);
+    fprintf(stderr, "[host] dlopen(%s) from tmp: %s\n", dst, h ? "OK" : dlerror());
+    return h;
+}
+
 static void *open_lib(const char *name, int flags) {
     char p[1300];
     snprintf(p, sizeof p, "%s/%s", libdir, name);
     if (!strcmp(name, "libfmod.so")) patch_interp(p);
     void *h = dlopen(p, flags);
-    if (!h) { fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror()); diag_file(p); exit(1); }
+    if (!h) {
+        fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror());
+        diag_file(p);
+        h = open_via_tmp(p, name, flags);
+        if (!h) exit(1);
+    }
     return h;
 }
 static void *need(void *h, const char *sym) {
@@ -195,6 +215,10 @@ int main(int argc, char **argv) {
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
     patch_interp(gamepath);
     void *game = dlopen(gamepath, RTLD_LAZY | RTLD_DEEPBIND);
+    if (!game) {
+        fprintf(stderr, "[host] dlopen(game) failed: %s\n", dlerror());
+        game = open_via_tmp(gamepath, "libminecraftpe.so", RTLD_LAZY | RTLD_DEEPBIND);
+    }
     if (!game) { fprintf(stderr, "[host] cannot load game: %s\n", dlerror()); return 1; }
     fprintf(stderr, "[host] libminecraftpe.so loaded\n");
 

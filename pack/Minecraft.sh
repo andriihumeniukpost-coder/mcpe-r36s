@@ -79,8 +79,8 @@ if [ $RC -eq 1 ]; then
   for f in "$GAMEDIR"/ldtrace*; do
     echo "---- $f (last 60 lines)"
     tail -60 "$f"
-    echo "---- lines mentioning errors/libfmod:"
-    grep -n -i -E "error|libfmod|cannot|not found|stdc" "$f" | tail -40
+    echo "---- trace from first libfmod mention (60 lines):"
+    sed -n '/libfmod.so/,$p' "$f" | grep -v -E "^ *[0-9]+:\s*$" | head -60
   done
 fi
 [ -n "$GPTOKEYB" ] && kill %1 2>/dev/null
