@@ -1,0 +1,16 @@
+name: build-armhf
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - name: Build in a 32-bit ARM Ubuntu 20.04 (glibc matches ArkOS)
+        run: |
+          docker run --rm --platform linux/arm/v7 -v "$PWD":/w -w /w ubuntu:20.04 bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update && apt-get install -y build-essential libsdl2-dev curl ca-certificates binutils
+            sh tools/fetch_deps.sh && make -j4'
+      - uses: actions/upload-artifact@v4
+        with: { name: mcpe-r36s-build, path: build/ }
