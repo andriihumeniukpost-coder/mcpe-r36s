@@ -143,6 +143,7 @@ int main(int argc, char **argv) {
     open_lib("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libz.so", RTLD_NOW | RTLD_LOCAL);
+    open_lib("libstdc++.so", RTLD_NOW | RTLD_LOCAL);   /* separate step so a failure names the culprit */
     void *hfmod = open_lib("libfmod.so", RTLD_LAZY | RTLD_LOCAL);
 
     *(void **)need(hegl, "shim_egl_window") = win;

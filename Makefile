@@ -48,10 +48,9 @@ $(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so $(B)/libs/libGLESv2.so $(B)/libs/li
 	$(CC) -shared -fPIC -o $@ $(B)/obj/empty.c -Wl,-soname,$(notdir $@)
 
 # The game never imports GL/zlib symbols directly (GL comes via eglGetProcAddress),
-# so empty libraries are enough. libfmod needs the C++ runtime: stub that pulls in the system one.
+# so empty libraries are enough. libfmod needs the C++ runtime: ship a copy (the device may lack armhf libstdc++).
 $(B)/libs/libstdc++.so: | $(B)/libs
-	echo "" > $(B)/obj/empty.c
-	$(CC) -shared -fPIC -o $@ $(B)/obj/empty.c -Wl,-soname,libstdc++.so -Wl,--no-as-needed -l:libstdc++.so.6
+	cp -L "$$($(CC) -print-file-name=libstdc++.so.6)" $@
 
 include/stb_image.h:
 	sh tools/fetch_deps.sh
