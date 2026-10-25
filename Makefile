@@ -9,7 +9,8 @@ CFLAGS  ?= -O2 -g -fPIC -Wall -Iinclude -U_FORTIFY_SOURCE $(shell $(SDLCFG) --cf
 B       := build
 
 all: $(B)/mcpe $(B)/libs/libc.so $(B)/libs/libm.so $(B)/libs/liblog.so $(B)/libs/libandroid.so \
-     $(B)/libs/libEGL.so $(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so $(B)/libs/libOpenSLES.so
+     $(B)/libs/libEGL.so $(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so $(B)/libs/libOpenSLES.so \
+     $(B)/libs/libGLESv2.so $(B)/libs/libz.so $(B)/libs/libstdc++.so
 
 $(B)/libs $(B)/obj:
 	mkdir -p $@
@@ -42,9 +43,15 @@ $(B)/libs/libOpenSLES.so: src/libopensles.c | $(B)/libs
 	$(CC) $(CFLAGS) -shared -o $@ $< -Wl,-soname,libOpenSLES.so $(shell $(SDLCFG) --libs) -lpthread
 
 # Empty libraries the game lists in DT_NEEDED
-$(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so: | $(B)/libs
+$(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so $(B)/libs/libGLESv2.so $(B)/libs/libz.so: | $(B)/libs
 	echo "" > $(B)/obj/empty.c
 	$(CC) -shared -fPIC -o $@ $(B)/obj/empty.c -Wl,-soname,$(notdir $@)
+
+# The game never imports GL/zlib symbols directly (GL comes via eglGetProcAddress),
+# so empty libraries are enough. libfmod needs the C++ runtime: stub that pulls in the system one.
+$(B)/libs/libstdc++.so: | $(B)/libs
+	echo "" > $(B)/obj/empty.c
+	$(CC) -shared -fPIC -o $@ $(B)/obj/empty.c -Wl,-soname,libstdc++.so -Wl,--no-as-needed -l:libstdc++.so.6
 
 include/stb_image.h:
 	sh tools/fetch_deps.sh

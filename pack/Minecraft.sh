@@ -54,15 +54,9 @@ PY
 fi
 [ -f libs/libminecraftpe.so ] || fail "libs/libminecraftpe.so missing"
 
-# Android-style names for system libraries (32-bit armhf)
 LIBSYS=""
 for d in /usr/lib/arm-linux-gnueabihf /usr/lib32 /lib/arm-linux-gnueabihf; do [ -d "$d" ] && { LIBSYS="$d"; break; }; done
 echo "== 32-bit lib dir: ${LIBSYS:-NOT FOUND}"
-link() { for f in "$@"; do [ -e "$LIBSYS/$f" ] && return 0; done; return 1; }
-for pair in "libGLESv2.so:libGLESv2.so.2" "libz.so:libz.so.1" "libstdc++.so:libstdc++.so.6"; do
-  dst=${pair%%:*}; src=${pair##*:}
-  if [ -n "$LIBSYS" ] && [ -e "$LIBSYS/$src" ]; then ln -sf "$LIBSYS/$src" "libs/$dst"; else echo "WARNING: $src not found in $LIBSYS"; fi
-done
 
 export LD_LIBRARY_PATH="$GAMEDIR/libs:$LIBSYS:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG_FILE="$controlfolder/gamecontrollerdb.txt"
