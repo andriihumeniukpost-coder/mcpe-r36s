@@ -13,6 +13,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <signal.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <execinfo.h>
 
 extern const char *g_assets_root;
@@ -55,12 +57,23 @@ static void patch_interp(const char *path) {
     fclose(f);
 }
 
+static void diag_file(const char *p) {
+    struct stat st;
+    if (stat(p, &st)) { fprintf(stderr, "[diag] stat(%s) failed: %s\n", p, strerror(errno)); return; }
+    int fd = open(p, O_RDONLY);
+    unsigned char h[20] = {0};
+    ssize_t n = fd >= 0 ? read(fd, h, sizeof h) : -1;
+    fprintf(stderr, "[diag] %s size=%lld mode=%o open=%s read=%zd magic=%02x %c%c%c class=%d machine=%d\n", p,
+            (long long)st.st_size, st.st_mode, fd >= 0 ? "ok" : strerror(errno), n, h[0], h[1], h[2], h[3], h[4], h[18] | h[19] << 8);
+    if (fd >= 0) close(fd);
+}
+
 static void *open_lib(const char *name, int flags) {
     char p[1300];
     snprintf(p, sizeof p, "%s/%s", libdir, name);
     if (!strcmp(name, "libfmod.so")) patch_interp(p);
     void *h = dlopen(p, flags);
-    if (!h) { fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror()); exit(1); }
+    if (!h) { fprintf(stderr, "[host] dlopen(%s) failed: %s\n", p, dlerror()); diag_file(p); exit(1); }
     return h;
 }
 static void *need(void *h, const char *sym) {

@@ -64,7 +64,7 @@ echo "== 32-bit lib dir: ${LIBSYS:-NOT FOUND}"
 export LD_LIBRARY_PATH="$GAMEDIR/libs:$LIBSYS:$LD_LIBRARY_PATH"
 export SDL_GAMECONTROLLERCONFIG_FILE="$controlfolder/gamecontrollerdb.txt"
 [ -n "$sdl_controllerconfig" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
-export LD_DEBUG_OUTPUT=
+rm -f "$GAMEDIR"/.[0-9]* "$GAMEDIR"/ldtrace* 2>/dev/null   # leftovers of earlier LD_DEBUG runs
 echo "== deps of mcpe (armhf loader):"; LD_TRACE_LOADED_OBJECTS=1 ./mcpe 2>&1 | head -30
 echo "== 32-bit runtime libs:"; ls -la "$LIBSYS"/libSDL2* "$LIBSYS"/libstdc++* "$LIBSYS"/libgcc_s* "$LIBSYS"/libEGL* "$LIBSYS"/libGLESv2* 2>&1 | head -20
 
@@ -74,8 +74,14 @@ echo "== starting"; sync
 RC=$?
 echo "== mcpe exited with code $RC"
 if [ $RC -eq 1 ]; then
-  echo "== load failed; re-running with loader trace (tail)"
-  LD_DEBUG=files,libs ./mcpe 2>&1 | grep -v "^ *[0-9]*:\s*$" | tail -80
+  echo "== load failed; re-running with dynamic-loader trace"
+  LD_DEBUG=files,libs LD_DEBUG_OUTPUT="$GAMEDIR/ldtrace" ./mcpe >/dev/null 2>&1
+  for f in "$GAMEDIR"/ldtrace*; do
+    echo "---- $f (last 60 lines)"
+    tail -60 "$f"
+    echo "---- lines mentioning errors/libfmod:"
+    grep -n -i -E "error|libfmod|cannot|not found|stdc" "$f" | tail -40
+  done
 fi
 [ -n "$GPTOKEYB" ] && kill %1 2>/dev/null
 # keep the message on screen briefly instead of flashing away
