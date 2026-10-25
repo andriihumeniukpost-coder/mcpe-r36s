@@ -25,9 +25,16 @@ JavaVM *fake_vm(void);
 jobject fake_activity_obj(void);
 
 static void scan_stack(uintptr_t *sp, int words) {
-    for (int i = 0, shown = 0; i < words && shown < 30; i++) {
-        uintptr_t off; const char *w = elf_where(sp[i], &off);
-        if (w) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, w, (unsigned long)off); shown++; }
+    int shown = 0;
+    for (int i = 0; i < words && shown < 60; i++) {
+        uintptr_t off, w = sp[i]; const char *n = elf_where(w, &off);
+        if (n) { fprintf(stderr, "[host]   stack[%d] %s+0x%lx\n", i, n, (unsigned long)off); shown++; continue; }
+        Dl_info di;
+        if (w > 0x10000 && i < 600 && dladdr((void *)w, &di) && di.dli_sname && w - (uintptr_t)di.dli_saddr < 0x4000) {
+            const char *f = strrchr(di.dli_fname, '/');
+            fprintf(stderr, "[host]   stack[%d] %s:%s+0x%lx\n", i, f ? f + 1 : di.dli_fname, di.dli_sname, (unsigned long)(w - (uintptr_t)di.dli_saddr));
+            shown++;
+        }
     }
 }
 /* called from the bionic-compat shim (raise/abort/kill...) to show who asked for it */
