@@ -79,6 +79,7 @@ static void log_once(const char *kind, const char *name, const char *sig) {
     fprintf(stderr, "[jni] %s %s %s\n", kind, name, sig);
 }
 
+static int which_dir;
 static JV run(meth *m, jvalue *a) {
     JV r; memset(&r, 0, sizeof r);
     const char *n = m->name;
@@ -87,6 +88,11 @@ static JV run(meth *m, jvalue *a) {
     else if (!strcmp(n, "getImageData") && a[0].l) r.l = java_getImageData(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "getFileDataBytes") && a[0].l) r.l = java_getFileDataBytes(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "isNetworkEnabled")) r.z = 0;
+    else if (!strcmp(n, "getExternalStoragePath")) { r.l = mkstr(getenv("MCPE_DATADIR")); }
+    else if (!strcmp(n, "getFilesDir")) { which_dir = 0; }
+    else if (!strcmp(n, "getCacheDir")) { which_dir = 1; }
+    else if (!strcmp(n, "getPath") || !strcmp(n, "getAbsolutePath")) {
+        char b[1300]; snprintf(b, sizeof b, "%s%s", getenv("MCPE_DATADIR") ? getenv("MCPE_DATADIR") : "", which_dir ? "/cache" : "/files"); r.l = mkstr(b); }
     else if (!strcmp(n, "getKeyFromKeyCode")) r.i = 0;
     else if (!strcmp(n, "getUserInputString")) { jobj *o = mk(K_OBJARR, "[Ljava/lang/String;"); o->len = 0; r.l = (jobject)o; }
     /* Calls that are pure UI side effects: ignore silently */
