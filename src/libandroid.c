@@ -92,7 +92,7 @@ struct fdent { int fd, ident; void *data; };
 static __thread ALooper *tl_looper;
 
 EXPORT ALooper *ALooper_prepare(int opts) {
-    fprintf(stderr, "[android] ALooper_prepare\n");
+    { static int pn; if (pn < 5) { pn++; fprintf(stderr, "[android] ALooper_prepare\n"); } }
     (void)opts;
     if (!tl_looper) {
         tl_looper = calloc(1, sizeof *tl_looper);

@@ -49,7 +49,12 @@ EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle
     if (!ctx) return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, NULL) == 0;
     return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, (SDL_GLContext)shim_egl_ctx) == 0;
 }
-EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) { (void)d; (void)s; SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE; }
+EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
+    static int n; (void)d; (void)s;
+    if (n < 3 || n % 120 == 0) fprintf(stderr, "[egl] swap #%d\n", n);
+    n++;
+    SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
+}
 EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; SDL_GL_SetSwapInterval(i); return EGL_TRUE; }
 EXPORT int eglQuerySurface(EGLhandle d, EGLhandle s, EGLint a, EGLint *v) {
     (void)d; (void)s;
