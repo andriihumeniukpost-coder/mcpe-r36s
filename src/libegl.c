@@ -46,10 +46,16 @@ EXPORT EGLhandle eglCreateWindowSurface(EGLhandle d, EGLhandle c, EGLhandle w, c
 EXPORT EGLhandle eglCreateContext(EGLhandle d, EGLhandle c, EGLhandle share, const EGLint *a) { (void)d; (void)c; (void)share; (void)a; return shim_egl_ctx ? shim_egl_ctx : (EGLhandle)3; }
 EXPORT int eglDestroyContext(EGLhandle d, EGLhandle c) { (void)d; (void)c; return EGL_TRUE; }
 EXPORT int eglDestroySurface(EGLhandle d, EGLhandle s) { (void)d; (void)s; return EGL_TRUE; }
+static int pipe_on, pipe_tried;
+static void *pp_dpy_g, *pp_ctx0_g; static int (*pp_mk)(void *, void *, void *, void *);
+static int pipe_setup(void *win, void *ctx0);
 EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle ctx) {
     (void)d; (void)draw; (void)read;
+    if (pipe_on) return pp_mk(pp_dpy_g, 0, 0, ctx ? pp_ctx0_g : 0) == EGL_TRUE;   /* surfaceless: the game only renders into offscreen targets */
     if (!ctx) return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, NULL) == 0;
-    return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, (SDL_GLContext)shim_egl_ctx) == 0;
+    int ok = SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, (SDL_GLContext)shim_egl_ctx) == 0;
+    if (ok && !pipe_tried) { pipe_tried = 1; pipe_setup(shim_egl_window, shim_egl_ctx); }
+    return ok;
 }
 static unsigned (*r_glGetError)(void);
 static const unsigned char *(*r_glGetString)(unsigned);
@@ -215,11 +221,16 @@ static void sc_set_index(int idx, int W, int H) {
     const char *d = getenv("MCPE_DATADIR"); if (d) { char pth[1200]; snprintf(pth, sizeof pth, "%s/scale.cfg", d); FILE *f = fopen(pth, "w"); if (f) { fprintf(f, "%d\n", sc_idx); fclose(f); } }
     sc_build(W, H);
 }
-SOFT static void w_glBindFramebuffer(unsigned t, unsigned f) { sc_game_fb = f; if (f == 0 && sc_active) f = sc_fbo; r_glBindFramebuffer(t, f); }
+static unsigned pp_fbo[3];
+static int pp_is_slot(unsigned f) { return f && (f == pp_fbo[0] || f == pp_fbo[1] || f == pp_fbo[2]); }
+SOFT static void w_glBindFramebuffer(unsigned t, unsigned f) {
+    if (pipe_on) { if (f == 0 || pp_is_slot(f)) { sc_game_fb = 0; f = sc_fbo; } else sc_game_fb = f; r_glBindFramebuffer(t, f); return; }
+    sc_game_fb = f; if (f == 0 && sc_active) f = sc_fbo; r_glBindFramebuffer(t, f); }
 SOFT static void w_glViewport(int x, int y, int w, int h) { if (sc_active && sc_game_fb == 0) { int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H); x = x * sc_w / W; w = w * sc_w / W; y = y * sc_h / H; h = h * sc_h / H; } r_glViewport(x, y, w, h); }
 SOFT static void w_glScissor(int x, int y, int w, int h) { if (sc_active && sc_game_fb == 0) { int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H); x = x * sc_w / W; w = w * sc_w / W; y = y * sc_h / H; h = h * sc_h / H; } r_glScissor(x, y, w, h); }
 static int sc_vp_save[4], sc_sc_was;
 static void sc_resolve(void) {  /* before the overlay: copy the small frame onto the window framebuffer */
+    if (pipe_on) return;
     int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
     if (&host_scale_req && host_scale_req != 0) { int rq = host_scale_req; host_scale_req = 0; sc_set_index(sc_idx + (rq > 0 ? -1 : 1), W, H); /* "higher" = more percent = lower index */ }
     if (!sc_inited) { sc_load(); if (sc_levels[sc_idx] < 100) sc_build(W, H); }
@@ -230,10 +241,97 @@ static void sc_resolve(void) {  /* before the overlay: copy the small frame onto
     s_bindfb(0x8D40, 0); s_vp(0, 0, W, H);
 }
 static void sc_restore(void) {  /* after the swap: draw into the small target again */
+    if (pipe_on) return;
     if (sc_active && sc_game_fb == 0) { s_bindfb(0x8D40, sc_fbo); s_vp(sc_vp_save[0], sc_vp_save[1], sc_vp_save[2], sc_vp_save[3]); if (sc_sc_was) s_en(0x0C11); }
     else if (!sc_active) { s_bindfb(0x8D40, sc_game_fb); }
 }
 static int sc_pct(void) { return sc_levels[sc_idx]; }
+
+/* ---- pipelined presentation: the game renders into offscreen slots on a surfaceless context; a presenter thread
+ *      (shared context, owns the window) blits finished slots to the screen and blocks on vsync, so game CPU work
+ *      for frame N+1 overlaps with GPU work / vsync wait of frame N ---- */
+#include <pthread.h>
+#define PS 3
+static unsigned pp_tex[PS], pp_rb; static int pp_w, pp_h, pp_cur;
+static int pp_free[PS], pp_q[PS], pp_qn; static void *pp_fence[PS];
+static pthread_mutex_t pp_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t pp_cv = PTHREAD_COND_INITIALIZER;
+static void *pp_ctx1;
+static void *(*pp_fsync)(unsigned, unsigned); static unsigned (*pp_cwait)(void *, unsigned, unsigned long long); static void (*pp_dsync)(void *), (*pp_flush)(void);
+static volatile int pp_presented;
+static void *pipe_thread(void *arg) {
+    (void)arg; SDL_Window *win = (SDL_Window *)shim_egl_window;
+    if (SDL_GL_MakeCurrent(win, (SDL_GLContext)pp_ctx1)) { fprintf(stderr, "[pipe] presenter MakeCurrent failed: %s\n", SDL_GetError()); return NULL; }
+    SDL_GL_SetSwapInterval(1);
+    void (*genfb)(int, unsigned *) = SDL_GL_GetProcAddress("glGenFramebuffers"), (*bindfb)(unsigned, unsigned) = SDL_GL_GetProcAddress("glBindFramebuffer"), (*fbtex)(unsigned, unsigned, unsigned, unsigned, int) = SDL_GL_GetProcAddress("glFramebufferTexture2D"),
+         (*blit)(int, int, int, int, int, int, int, int, unsigned, unsigned) = SDL_GL_GetProcAddress("glBlitFramebuffer");
+    unsigned rfbo[PS]; genfb(PS, rfbo);
+    for (int i = 0; i < PS; i++) { bindfb(0x8D40, rfbo[i]); fbtex(0x8D40, 0x8CE0, 0x0DE1, pp_tex[i], 0); }
+    bindfb(0x8D40, 0);
+    fprintf(stderr, "[pipe] presenter running (swap interval now %d)\n", SDL_GL_GetSwapInterval());
+    int prev = -1;
+    for (;;) {
+        pthread_mutex_lock(&pp_mu); while (!pp_qn) pthread_cond_wait(&pp_cv, &pp_mu);
+        int slot = pp_q[0]; pp_qn--; for (int i = 0; i < pp_qn; i++) pp_q[i] = pp_q[i + 1]; void *f = pp_fence[slot]; pp_fence[slot] = NULL; pthread_mutex_unlock(&pp_mu);
+        if (f) { pp_cwait(f, 1, 1000000000ULL); pp_dsync(f); }
+        int W = 640, H = 480; SDL_GL_GetDrawableSize(win, &W, &H);
+        bindfb(0x8CA8, rfbo[slot]); bindfb(0x8CA9, 0);
+        blit(0, 0, pp_w, pp_h, 0, 0, W, H, 0x4000, 0x2600);
+        bindfb(0x8D40, 0);
+        draw_overlay();
+        SDL_GL_SwapWindow(win);
+        pp_presented++;
+        pthread_mutex_lock(&pp_mu); if (prev >= 0) pp_free[prev] = 1; prev = slot; pthread_cond_broadcast(&pp_cv); pthread_mutex_unlock(&pp_mu);
+    }
+    return NULL;
+}
+static int pipe_setup(void *winp, void *ctx0) {
+    SDL_Window *win = (SDL_Window *)winp; const char *e = getenv("MCPE_PIPE");
+    if (e && !strcmp(e, "0")) { fprintf(stderr, "[pipe] disabled by MCPE_PIPE=0\n"); return 0; }
+    void *(*gcd)(void) = SDL_GL_GetProcAddress("eglGetCurrentDisplay"); int (*mk)(void *, void *, void *, void *) = SDL_GL_GetProcAddress("eglMakeCurrent"); const char *(*qs)(void *, int) = SDL_GL_GetProcAddress("eglQueryString");
+    if (!gcd || !mk || !qs || (void *)mk == (void *)eglMakeCurrent) { fprintf(stderr, "[pipe] real EGL entry points unavailable (gcd=%p mk=%p qs=%p), pipelining off\n", (void *)gcd, (void *)mk, (void *)qs); return 0; }
+    void *dpy = gcd(); const char *ex = dpy ? qs(dpy, 0x3055) : NULL;
+    if (!dpy || !ex || !strstr(ex, "EGL_KHR_surfaceless_context")) { fprintf(stderr, "[pipe] no EGL_KHR_surfaceless_context (%s), pipelining off\n", ex ? ex : "no display"); return 0; }
+    void (*genfb)(int, unsigned *) = SDL_GL_GetProcAddress("glGenFramebuffers"), (*bindfb)(unsigned, unsigned) = SDL_GL_GetProcAddress("glBindFramebuffer"), (*fbtex)(unsigned, unsigned, unsigned, unsigned, int) = SDL_GL_GetProcAddress("glFramebufferTexture2D"),
+         (*fbrb)(unsigned, unsigned, unsigned, unsigned) = SDL_GL_GetProcAddress("glFramebufferRenderbuffer"), (*genrb)(int, unsigned *) = SDL_GL_GetProcAddress("glGenRenderbuffers"), (*bindrb)(unsigned, unsigned) = SDL_GL_GetProcAddress("glBindRenderbuffer"),
+         (*rbst)(unsigned, unsigned, int, int) = SDL_GL_GetProcAddress("glRenderbufferStorage"), (*gent)(int, unsigned *) = SDL_GL_GetProcAddress("glGenTextures"), (*bindt)(unsigned, unsigned) = SDL_GL_GetProcAddress("glBindTexture"),
+         (*teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *) = SDL_GL_GetProcAddress("glTexImage2D"), (*texpar)(unsigned, unsigned, int) = SDL_GL_GetProcAddress("glTexParameteri"), (*vp)(int, int, int, int) = SDL_GL_GetProcAddress("glViewport"), (*scis)(int, int, int, int) = SDL_GL_GetProcAddress("glScissor");
+    unsigned (*chk)(unsigned) = SDL_GL_GetProcAddress("glCheckFramebufferStatus");
+    pp_fsync = SDL_GL_GetProcAddress("glFenceSync"); pp_cwait = SDL_GL_GetProcAddress("glClientWaitSync"); pp_dsync = SDL_GL_GetProcAddress("glDeleteSync"); pp_flush = SDL_GL_GetProcAddress("glFlush");
+    if (!genfb || !bindfb || !fbtex || !fbrb || !genrb || !bindrb || !rbst || !gent || !bindt || !teximg || !texpar || !vp || !scis || !chk || !pp_fsync || !pp_cwait || !pp_dsync || !pp_flush) { fprintf(stderr, "[pipe] missing GL entry points, pipelining off\n"); return 0; }
+    int W = 640, H = 480; SDL_GL_GetDrawableSize(win, &W, &H); pp_w = W; pp_h = H;
+    /* offscreen slots (objects are shared with the presenter's context) */
+    int pt = 0, pf = 0; { void (*gi)(unsigned, int *) = SDL_GL_GetProcAddress("glGetIntegerv"); if (gi) { gi(0x8069, &pt); gi(0x8CA6, &pf); } }
+    unsigned fbo[PS]; genfb(PS, fbo); gent(PS, pp_tex); genrb(1, &pp_rb);
+    bindrb(0x8D41, pp_rb); rbst(0x8D41, 0x88F0, W, H);
+    int good = 1;
+    for (int i = 0; i < PS; i++) { bindt(0x0DE1, pp_tex[i]); teximg(0x0DE1, 0, 0x1908, W, H, 0, 0x1908, 0x1401, NULL); texpar(0x0DE1, 0x2801, 0x2600); texpar(0x0DE1, 0x2800, 0x2600); texpar(0x0DE1, 0x2802, 0x812F); texpar(0x0DE1, 0x2803, 0x812F);
+        bindfb(0x8D40, fbo[i]); fbtex(0x8D40, 0x8CE0, 0x0DE1, pp_tex[i], 0); fbrb(0x8D40, 0x821A, 0x8D41, pp_rb); if (chk(0x8D40) != 0x8CD5) good = 0; }
+    bindfb(0x8D40, (unsigned)pf); bindt(0x0DE1, (unsigned)pt);
+    if (!good) { fprintf(stderr, "[pipe] offscreen slots incomplete, pipelining off\n"); return 0; }
+    /* second context sharing objects with the game's; it takes over the window */
+    SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 1);
+    SDL_GLContext c1 = SDL_GL_CreateContext(win);
+    SDL_GL_SetAttribute(SDL_GL_SHARE_WITH_CURRENT_CONTEXT, 0);
+    if (!c1) { fprintf(stderr, "[pipe] shared context creation failed: %s\n", SDL_GetError()); SDL_GL_MakeCurrent(win, (SDL_GLContext)ctx0); return 0; }
+    SDL_GL_MakeCurrent(win, NULL);
+    if (mk(dpy, NULL, NULL, ctx0) != EGL_TRUE) { fprintf(stderr, "[pipe] surfaceless MakeCurrent failed, pipelining off\n"); SDL_GL_MakeCurrent(win, (SDL_GLContext)ctx0); return 0; }
+    pp_mk = mk; pp_dpy_g = dpy; pp_ctx0_g = ctx0; pp_ctx1 = c1;
+    for (int i = 0; i < PS; i++) { pp_free[i] = 1; pp_fbo[i] = fbo[i]; } pp_free[0] = 0; pp_cur = 0; sc_fbo = (int)fbo[0];
+    bindfb(0x8D40, fbo[0]); vp(0, 0, W, H); scis(0, 0, W, H);
+    pipe_on = 1;
+    pthread_t th; if (pthread_create(&th, NULL, pipe_thread, NULL)) { fprintf(stderr, "[pipe] thread creation failed\n"); }
+    pthread_detach(th);
+    fprintf(stderr, "[pipe] pipelined presentation enabled: %d slots %dx%d, extensions ok\n", PS, W, H);
+    return 1;
+}
+static void pipe_submit(void) {
+    void *f = pp_fsync(0x9117, 0); pp_flush();
+    pthread_mutex_lock(&pp_mu); pp_fence[pp_cur] = f; pp_q[pp_qn++] = pp_cur; pthread_cond_broadcast(&pp_cv);
+    int n = -1; for (;;) { for (int i = 0; i < PS; i++) if (pp_free[i]) { n = i; break; } if (n >= 0) break; pthread_cond_wait(&pp_cv, &pp_mu); }
+    pp_free[n] = 0; pp_cur = n; pthread_mutex_unlock(&pp_mu);
+    static void (*bfb)(unsigned, unsigned); if (!bfb) bfb = SDL_GL_GetProcAddress("glBindFramebuffer");
+    sc_fbo = (int)pp_fbo[n]; if (sc_game_fb == 0) bfb(0x8D40, pp_fbo[n]);
+}
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
@@ -244,7 +342,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     if (n == 200 || n == 1500) probe_pixels();
     n++;
     hb_frame_end();
-    draw_overlay();
+    if (!pipe_on) draw_overlay();
     { /* frame timing: wall + this thread's CPU time in the game vs. inside swap */
         static struct timespec w_end, c_end; static double g_wall, g_cpu, s_wall, s_cpu; static int frames, init; static struct timespec rep;
         struct timespec w0, c0, w1, c1; clock_gettime(CLOCK_MONOTONIC, &w0); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
@@ -252,9 +350,10 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
         if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
         { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_FINISH") != NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
           if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
+        if (&host_vsync_req && host_vsync_req >= 0 && pipe_on) host_vsync_req = -1;
         if (&host_vsync_req && host_vsync_req >= 0) { int v = host_vsync_req; host_vsync_req = -1; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] vsync toggled -> %d (r=%d, now %d)\n", v, r, SDL_GL_GetSwapInterval()); }
-        SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
-        sc_restore();
+        if (pipe_on) pipe_submit(); else { SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
+        sc_restore(); }
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
         s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
         { static double a_g, a_c, a_s; static int a_n; static struct timespec a_t; double gw = 0, gc = 0;
@@ -271,7 +370,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     }
     return EGL_TRUE;
 }
-EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; const char *o = getenv("MCPE_SWAPINT"); int v = o ? atoi(o) : i; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] swapInterval game=%d used=%d -> %d (now %d)\n", i, v, r, SDL_GL_GetSwapInterval()); return EGL_TRUE; }
+EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; if (pipe_on) { g_vsync = i; fprintf(stderr, "[egl] swapInterval game=%d ignored (pipelined presenter owns vsync)\n", i); return EGL_TRUE; } const char *o = getenv("MCPE_SWAPINT"); int v = o ? atoi(o) : i; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] swapInterval game=%d used=%d -> %d (now %d)\n", i, v, r, SDL_GL_GetSwapInterval()); return EGL_TRUE; }
 EXPORT int eglQuerySurface(EGLhandle d, EGLhandle s, EGLint a, EGLint *v) {
     (void)d; (void)s;
     int w = 640, h = 480;
@@ -372,7 +471,7 @@ SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, co
     for (int i = 0; i < k; i++) {
         size_t L = len && len[i] >= 0 ? (size_t)len[i] : strlen(src[i]);
         char *o = malloc(L * 2 + 64); size_t oi = 0;
-        static const char *prec; if (!prec) { prec = getenv("MCPE_PREC"); if (!prec) prec = "highp"; }
+        static const char *prec; if (!prec) { prec = getenv("MCPE_PREC"); if (!prec) prec = "mediump"; }
         size_t pl = strlen(prec);
         for (size_t j = 0; j < L; ) {
             if (j + 4 <= L && !memcmp(src[i] + j, "lowp", 4)) { memcpy(o + oi, prec, pl); oi += pl; j += 4; }
@@ -464,7 +563,7 @@ SOFT static void w_glLinkProgram(unsigned pr) {
     int cached = 0; char path[1300] = "";
     if (usable && pr < PC_N && pc_natt[pr] > 0) {
         unsigned long long h = pc_phash[pr] ? pc_phash[pr] : 1469598103934665603ULL;
-        h = fnv(h, getenv("MCPE_PREC") ? getenv("MCPE_PREC") : "highp", 5);
+        h = fnv(h, getenv("MCPE_PREC") ? getenv("MCPE_PREC") : "mediump", 5);
         const char *rn = (const char *)r_glGetString(0x1F01), *vn = (const char *)r_glGetString(0x1F02);
         if (rn) h = fnv(h, rn, strlen(rn)); if (vn) h = fnv(h, vn, strlen(vn));
         for (int i = 0; i < pc_natt[pr]; i++) { unsigned sh = pc_att[pr][i]; unsigned long long sv = sh < PC_N ? pc_shash[sh] : 0; h = fnv(h, &sv, sizeof sv); }

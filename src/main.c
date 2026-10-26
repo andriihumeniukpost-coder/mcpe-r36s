@@ -226,7 +226,7 @@ volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) *
 volatile int host_vsync_req = -1;              /* SELECT + d-pad up/down: vsync on/off (applied on the render thread) */
 volatile int host_scale_req = 0;               /* SELECT + L1/R1: render scale down/up (applied on the render thread) */
 volatile int host_hide_idx = -1;              /* draw bisect (SELECT + d-pad left/right) */
-volatile int host_ov_mode = 1;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
+volatile int host_ov_mode = 0;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
 char host_ov_lines[8][48];                    /* filled by stats_thread, drawn by libegl */
 static int slurp(const char *path, char *buf, size_t n) {
     FILE *f = fopen(path, "r"); if (!f) return 0;
