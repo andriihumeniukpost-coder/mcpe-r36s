@@ -388,6 +388,76 @@ void (*signal(int sig, void (*h)(int)))(int) {
     return real(sig, h);
 }
 
+/* ---- tiny sampling profiler: SIGPROF to every thread, aggregated in the log ([prof] lines) */
+#define PROF_N 12000
+static struct { int tid; uintptr_t pc, caller; } prof_buf[PROF_N];
+static volatile unsigned prof_i;
+static void sigprof(int sig, siginfo_t *si, void *uc) {
+    (void)sig; (void)si;
+    ucontext_t *u = uc; unsigned i = __sync_fetch_and_add(&prof_i, 1);
+    if (i >= PROF_N) return;
+    uintptr_t pc = u->uc_mcontext.arm_pc, caller = 0, off; uintptr_t *sp = (uintptr_t *)u->uc_mcontext.arm_sp;
+    if (!elf_where(pc, &off)) {
+        for (int k = 0; k < 160; k++) {
+            if ((((uintptr_t)(sp + k)) & 4095) == 0 || k == 0) { unsigned char vec; if (mincore((void *)((uintptr_t)(sp + k) & ~4095u), 1, &vec)) break; }
+            if (elf_where(sp[k], &off)) { caller = sp[k]; break; }
+        }
+    }
+    prof_buf[i].tid = (int)syscall(SYS_gettid); prof_buf[i].pc = pc; prof_buf[i].caller = caller;
+}
+static void prof_site(uintptr_t pc, char *out, size_t n) {
+    uintptr_t off; const char *w = elf_where(pc, &off); Dl_info di;
+    if (!pc) snprintf(out, n, "-");
+    else if (w) snprintf(out, n, "%s+0x%lx", w, (unsigned long)off);
+    else if (dladdr((void *)pc, &di) && di.dli_fname) snprintf(out, n, "%s:%s", strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : di.dli_fname, di.dli_sname ? di.dli_sname : "?");
+    else snprintf(out, n, "0x%lx", (unsigned long)pc);
+}
+static char prof_keys[PROF_N][150];
+static int prof_cmp(const void *a, const void *b) { return strcmp((const char *)a, (const char *)b); }
+static void prof_report(int round) {
+    unsigned n = prof_i < PROF_N ? prof_i : PROF_N;
+    char comms[64][2][24]; int ncomm = 0;
+    for (unsigned i = 0; i < n; i++) {
+        const char *cm = "?"; int tid = prof_buf[i].tid;
+        for (int k = 0; k < ncomm; k++) if (atoi(comms[k][0]) == tid) { cm = comms[k][1]; break; }
+        if (cm[0] == '?' && ncomm < 64) {
+            char p[64], b[24] = "?"; snprintf(p, sizeof p, "/proc/self/task/%d/comm", tid); FILE *f = fopen(p, "r"); if (f) { if (!fgets(b, sizeof b, f)) b[0] = 0; fclose(f); } b[strcspn(b, "\n")] = 0;
+            snprintf(comms[ncomm][0], 24, "%d", tid); snprintf(comms[ncomm][1], 24, "%s", b); cm = comms[ncomm][1]; ncomm++;
+        }
+        char s1[60], s2[60]; prof_site(prof_buf[i].pc, s1, sizeof s1); prof_site(prof_buf[i].caller, s2, sizeof s2);
+        snprintf(prof_keys[i], sizeof prof_keys[i], "%d|%s|%s|%s", tid, cm, s1, s2);
+    }
+    qsort(prof_keys, n, sizeof prof_keys[0], prof_cmp);
+    static struct { char k[150]; int c; } top[40]; int nt = 0;
+    memset(top, 0, sizeof top);
+    for (unsigned i = 0; i < n;) {
+        unsigned j = i; while (j < n && !strcmp(prof_keys[i], prof_keys[j])) j++;
+        int c = (int)(j - i);
+        int pos = nt < 40 ? nt++ : 39;
+        if (pos == 39 && nt == 40 && top[39].c >= c && top[39].k[0]) { i = j; continue; }
+        snprintf(top[pos].k, sizeof top[pos].k, "%s", prof_keys[i]); top[pos].c = c;
+        for (int a = pos; a > 0 && top[a].c > top[a - 1].c; a--) { char t[150]; int tc = top[a].c; memcpy(t, top[a].k, 150); memcpy(top[a].k, top[a - 1].k, 150); top[a].c = top[a - 1].c; memcpy(top[a - 1].k, t, 150); top[a - 1].c = tc; }
+        i = j;
+    }
+    fprintf(stderr, "[prof] ===== window %d: %u samples =====  (count | tid | thread | pc | game-caller)\n", round, n);
+    for (int i = 0; i < nt; i++) fprintf(stderr, "[prof] %4d | %s\n", top[i].c, top[i].k);
+    fflush(stderr);
+}
+static void *prof_thread(void *arg) {
+    (void)arg; sleep(25);
+    for (int round = 0; round < 5; round++) {
+        prof_i = 0;
+        for (int k = 0; k < 150; k++) {
+            DIR *d = opendir("/proc/self/task"); if (!d) break;
+            struct dirent *e; int me = (int)syscall(SYS_gettid);
+            while ((e = readdir(d))) { int tid = atoi(e->d_name); if (tid > 0 && tid != me) syscall(SYS_tgkill, getpid(), tid, SIGPROF); }
+            closedir(d); usleep(100000);
+        }
+        prof_report(round);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
@@ -407,6 +477,7 @@ int main(int argc, char **argv) {
     sa.sa_sigaction = crash; sa.sa_flags = SA_SIGINFO;
     { struct sigaction s2; memset(&s2, 0, sizeof s2); s2.sa_sigaction = usr2; s2.sa_flags = SA_SIGINFO | SA_RESTART; sigaction(SIGUSR2, &s2, NULL); }
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
+    { struct sigaction s3; memset(&s3, 0, sizeof s3); s3.sa_sigaction = sigprof; s3.sa_flags = SA_SIGINFO | SA_RESTART; sigaction(SIGPROF, &s3, NULL); }
     host_allow = 0;
     fprintf(stderr, "[host] start, base=%s\n", base);
     (void)argv;
@@ -483,6 +554,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] JNI_OnLoad done\n");
 
     { pthread_t wt; pthread_create(&wt, NULL, watchdog, NULL); pthread_detach(wt); }
+    if (!getenv("MCPE_NOPROF")) { pthread_t pt; pthread_create(&pt, NULL, prof_thread, NULL); pthread_detach(pt); }
     /* MainActivity.onCreate calls nativeRegisterThis(): it stores the activity and releases the mutex that
      * JNI_OnLoad leaves locked; the game thread (android_main) blocks on that mutex until then. */
     {

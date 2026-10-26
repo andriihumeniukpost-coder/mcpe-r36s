@@ -10,6 +10,7 @@
 #include <SDL2/SDL.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 
 EXPORT void *shim_egl_window;
@@ -154,7 +155,21 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     if (n == 200 || n == 1500) probe_pixels();
     n++;
     draw_overlay();
-    SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
+    { /* frame timing: wall + this thread's CPU time in the game vs. inside swap */
+        static struct timespec w_end, c_end; static double g_wall, g_cpu, s_wall, s_cpu; static int frames, init; static struct timespec rep;
+        struct timespec w0, c0, w1, c1; clock_gettime(CLOCK_MONOTONIC, &w0); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
+        if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
+        SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
+        clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
+        s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
+        w_end = w1; c_end = c1; init = 1; frames++;
+        if (!rep.tv_sec) rep = w1;
+        if (w1.tv_sec - rep.tv_sec >= 5) {
+            fprintf(stderr, "[frame] %d frames/5s: game wall %.1f ms cpu %.1f ms | swap wall %.1f ms cpu %.1f ms (per frame)\n", frames, g_wall / frames, g_cpu / frames, s_wall / frames, s_cpu / frames);
+            frames = 0; g_wall = g_cpu = s_wall = s_cpu = 0; rep = w1;
+        }
+    }
+    return EGL_TRUE;
 }
 EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; SDL_GL_SetSwapInterval(i); return EGL_TRUE; }
 EXPORT int eglQuerySurface(EGLhandle d, EGLhandle s, EGLint a, EGLint *v) {
