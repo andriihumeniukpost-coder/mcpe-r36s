@@ -55,36 +55,96 @@ static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void);
 static void probe_pixels(void);
 extern volatile int host_cursor[3] __attribute__((weak));
-extern volatile int host_fps_on __attribute__((weak));
+extern volatile int host_ov_mode __attribute__((weak));      /* 0 off, 1 FPS, 2 full stats */
+extern char host_ov_lines[4][40] __attribute__((weak));      /* CPU / GPU / RAM / GAME lines from the host sampler */
 static int fps_value;
-static const unsigned char digs[10][5] = { {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7} };
+/* 3x5 font: digits, A-Z, a few symbols (rows top->bottom, 3 bits each) */
+static const unsigned char font_digits[10][5] = { {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7} };
+static const unsigned char font_alpha[26][5] = {
+    {2,5,7,5,5},{6,5,6,5,6},{3,4,4,4,3},{6,5,5,5,6},{7,4,6,4,7},{7,4,6,4,4},{3,4,5,5,3},{5,5,7,5,5},{7,2,2,2,7},{1,1,1,5,2},{5,5,6,5,5},{4,4,4,4,7},{5,7,7,5,5},
+    {6,5,5,5,5},{2,5,5,5,2},{6,5,6,4,4},{2,5,5,7,3},{6,5,6,5,5},{3,4,2,1,6},{7,2,2,2,2},{5,5,5,5,7},{5,5,5,5,2},{5,5,7,7,5},{5,5,2,5,5},{5,5,2,2,2},{7,1,2,4,7} };
+static const unsigned char *glyph(char c) {
+    static const unsigned char blank[5] = {0,0,0,0,0}, dot[5] = {0,0,0,0,2}, colon[5] = {0,2,0,2,0}, pct[5] = {5,1,2,4,5}, slash[5] = {1,1,2,4,4}, dash[5] = {0,0,7,0,0};
+    if (c >= '0' && c <= '9') return font_digits[c - '0'];
+    if (c >= 'A' && c <= 'Z') return font_alpha[c - 'A'];
+    if (c >= 'a' && c <= 'z') return font_alpha[c - 'a'];
+    switch (c) { case '.': return dot; case ':': return colon; case '%': return pct; case '/': return slash; case '-': return dash; default: return blank; }
+}
+#define OVW 128
+#define OVH 32
+static unsigned char ov_buf[OVW * OVH * 4];
+static unsigned ov_tex, ov_fbo; static int ov_rows, ov_dirty = 1, ov_failed;
+static void ov_text(int line, const char *s, unsigned rgb) {
+    int y0 = line * 6;
+    for (int i = 0; s[i] && i < 31; i++) {
+        const unsigned char *g = glyph(s[i]);
+        for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) {
+            unsigned char *p = ov_buf + ((y0 + r) * OVW + i * 4 + c) * 4; p[0] = rgb >> 16; p[1] = rgb >> 8; p[2] = rgb; p[3] = 255; }
+    }
+}
+static void ov_build(int mode) {
+    for (int i = 0; i < OVW * OVH; i++) { ov_buf[i * 4] = ov_buf[i * 4 + 1] = ov_buf[i * 4 + 2] = 0; ov_buf[i * 4 + 3] = 255; }
+    char t[48]; snprintf(t, sizeof t, "FPS %d", fps_value); ov_text(0, t, 0xFFFF00);
+    ov_rows = 1;
+    if (mode >= 2 && &host_ov_lines[0][0]) { for (int i = 0; i < 4; i++) { ov_text(1 + i, host_ov_lines[i], i == 0 ? 0x80FF80 : i == 1 ? 0x80C0FF : 0xFFFFFF); } ov_rows = 5; }
+    ov_dirty = 1;
+}
 static void draw_overlay(void) {
     static void (*gi)(unsigned, int *), (*en)(unsigned), (*dis)(unsigned), (*sc)(int, int, int, int), (*cc)(float, float, float, float), (*cl)(unsigned), (*gf)(unsigned, float *), (*cm)(unsigned char, unsigned char, unsigned char, unsigned char), (*gb)(unsigned, unsigned char *);
     static unsigned char (*ise)(unsigned);
-    static unsigned t0, frames;
+    static void (*gen_t)(int, unsigned *), (*bind_t)(unsigned, unsigned), (*teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texsub)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texpar)(unsigned, unsigned, int), (*actv)(unsigned);
+    static void (*gen_f)(int, unsigned *), (*bind_f)(unsigned, unsigned), (*fbtex)(unsigned, unsigned, unsigned, unsigned, int), (*blit)(int, int, int, int, int, int, int, int, unsigned, unsigned);
+    static unsigned t0, frames; static int last_mode = -1;
     frames++; unsigned now = SDL_GetTicks();
-    if (now - t0 >= 500) { fps_value = (int)(frames * 1000.0f / (now - t0) + 0.5f); frames = 0; t0 = now; }
+    int mode = (&host_ov_mode) ? host_ov_mode : 1;
     int cur = (&host_cursor[0] && host_cursor[2]);
+    if (now - t0 >= 500) { fps_value = (int)(frames * 1000.0f / (now - t0) + 0.5f); frames = 0; t0 = now; if (mode) ov_build(mode); }
+    if (mode != last_mode) { last_mode = mode; if (mode) ov_build(mode); }
+    if (!mode && !cur) return;
     if (!gi) { gi = SDL_GL_GetProcAddress("glGetIntegerv"); en = SDL_GL_GetProcAddress("glEnable"); dis = SDL_GL_GetProcAddress("glDisable"); sc = SDL_GL_GetProcAddress("glScissor");
         cc = SDL_GL_GetProcAddress("glClearColor"); cl = SDL_GL_GetProcAddress("glClear"); gf = SDL_GL_GetProcAddress("glGetFloatv"); cm = SDL_GL_GetProcAddress("glColorMask");
-        gb = SDL_GL_GetProcAddress("glGetBooleanv"); ise = SDL_GL_GetProcAddress("glIsEnabled"); }
+        gb = SDL_GL_GetProcAddress("glGetBooleanv"); ise = SDL_GL_GetProcAddress("glIsEnabled");
+        gen_t = SDL_GL_GetProcAddress("glGenTextures"); bind_t = SDL_GL_GetProcAddress("glBindTexture"); teximg = SDL_GL_GetProcAddress("glTexImage2D"); texsub = SDL_GL_GetProcAddress("glTexSubImage2D");
+        texpar = SDL_GL_GetProcAddress("glTexParameteri"); actv = SDL_GL_GetProcAddress("glActiveTexture");
+        gen_f = SDL_GL_GetProcAddress("glGenFramebuffers"); bind_f = SDL_GL_GetProcAddress("glBindFramebuffer"); fbtex = SDL_GL_GetProcAddress("glFramebufferTexture2D"); blit = SDL_GL_GetProcAddress("glBlitFramebuffer"); }
     if (!gi || !sc || !cc || !cl || !cm || !gb || !ise) return;
     int box[4]; float col[4]; unsigned char mask[4]; int fb = 0;
     gi(0x8CA6, &fb); if (fb) return;
     gi(0x0C10, box); gf(0x0C22, col); gb(0x0C23, mask); unsigned char was = ise(0x0C11);
     int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
-    en(0x0C11); cm(1, 1, 1, 1);
-    if (cur) { int x = host_cursor[0], y = H - host_cursor[1];
-        sc(x - 7, y - 7, 15, 15); cc(0, 0, 0, 1); cl(0x4000); sc(x - 5, y - 5, 11, 11); cc(1, 1, 1, 1); cl(0x4000); }
-    if (!&host_fps_on || host_fps_on) { /* FPS counter, top-left */
-        char txt[8]; int n = snprintf(txt, sizeof txt, "%d", fps_value); const int S = 3, X0 = 4, Y0 = H - 4 - 5 * S;
-        sc(X0 - 2, Y0 - 2, n * 4 * S + 3, 5 * S + 4); cc(0, 0, 0, 1); cl(0x4000);
-        cc(1, 1, 0, 1);
-        for (int i = 0; i < n; i++) { int d = txt[i] - '0'; if (d < 0 || d > 9) continue;
-            for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (digs[d][r] & (4 >> c)) { sc(X0 + (i * 4 + c) * S, Y0 + (4 - r) * S, S, S); cl(0x4000); } }
+    cm(1, 1, 1, 1);
+    if (mode) {
+        int ok = blit && gen_t && bind_t && teximg && texsub && texpar && actv && gen_f && bind_f && fbtex && !ov_failed;
+        if (ok) {
+            int prev_unit = 0, prev_tex = 0, rfb = 0; gi(0x84E0, &prev_unit); gi(0x8CAA, &rfb);
+            if (ov_dirty || !ov_tex) {
+                actv(0x84C0); gi(0x8069, &prev_tex);
+                if (!ov_tex) { gen_t(1, &ov_tex); bind_t(0x0DE1, ov_tex); texpar(0x0DE1, 0x2801, 0x2600); texpar(0x0DE1, 0x2800, 0x2600);
+                    texpar(0x0DE1, 0x2802, 0x812F); texpar(0x0DE1, 0x2803, 0x812F); teximg(0x0DE1, 0, 0x1908, OVW, OVH, 0, 0x1908, 0x1401, ov_buf);
+                    gen_f(1, &ov_fbo); bind_f(0x8D40, ov_fbo); fbtex(0x8D40, 0x8CE0, 0x0DE1, ov_tex, 0); bind_f(0x8D40, 0); }
+                else { bind_t(0x0DE1, ov_tex); texsub(0x0DE1, 0, 0, 0, OVW, OVH, 0x1908, 0x1401, ov_buf); }
+                bind_t(0x0DE1, prev_tex); actv(prev_unit); ov_dirty = 0;
+            }
+            if (was) dis(0x0C11);
+            const int S = 2; int w = OVW, h = ov_rows * 6;
+            { static int w_used; if (!w_used) { w_used = 1; } }
+            bind_f(0x8CA8, ov_fbo); bind_f(0x8CA9, 0);
+            blit(0, 0, 31 * 4, h, 4, H - 4, 4 + 31 * 4 * S, H - 4 - h * S, 0x4000, 0x2600); (void)w;
+            bind_f(0x8CA8, rfb); bind_f(0x8CA9, fb);
+            if (was) en(0x0C11);
+        } else { /* fallback: FPS digits only via scissored clears */
+            en(0x0C11);
+            char txt[8]; int n = snprintf(txt, sizeof txt, "%d", fps_value); const int S = 3, X0 = 4, Y0 = H - 4 - 5 * S;
+            sc(X0 - 2, Y0 - 2, n * 4 * S + 3, 5 * S + 4); cc(0, 0, 0, 1); cl(0x4000); cc(1, 1, 0, 1);
+            for (int i = 0; i < n; i++) { const unsigned char *g = glyph(txt[i]);
+                for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) { sc(X0 + (i * 4 + c) * S, Y0 + (4 - r) * S, S, S); cl(0x4000); } }
+            sc(box[0], box[1], box[2], box[3]); cc(col[0], col[1], col[2], col[3]); if (!was) dis(0x0C11);
+        }
     }
+    if (cur) { en(0x0C11); int x = host_cursor[0], y = H - host_cursor[1];
+        sc(x - 7, y - 7, 15, 15); cc(0, 0, 0, 1); cl(0x4000); sc(x - 5, y - 5, 11, 11); cc(1, 1, 1, 1); cl(0x4000); }
     sc(box[0], box[1], box[2], box[3]); cc(col[0], col[1], col[2], col[3]); cm(mask[0], mask[1], mask[2], mask[3]);
-    if (!was) dis(0x0C11);
+    if (was) en(0x0C11); else dis(0x0C11);
 }
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;

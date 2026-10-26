@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -88,6 +89,8 @@ static JV run(meth *m, jvalue *a) {
     else if (!strcmp(n, "getImageData") && a[0].l) r.l = java_getImageData(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "getFileDataBytes") && a[0].l) r.l = java_getFileDataBytes(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "isNetworkEnabled")) r.z = 0;
+    else if (!strcmp(n, "getNumCores")) { long c = sysconf(_SC_NPROCESSORS_ONLN); r.i = c > 0 ? (int)c : 4; }
+    else if (!strcmp(n, "getTotalMemory")) { FILE *f = fopen("/proc/meminfo", "r"); long kb = 1000000; if (f) { char l[128]; while (fgets(l, sizeof l, f)) if (sscanf(l, "MemTotal: %ld", &kb) == 1) break; fclose(f); } r.j = (long long)kb * 1024; }
     else if (!strcmp(n, "getExternalStoragePath")) { r.l = mkstr(getenv("MCPE_DATADIR")); }
     else if (!strcmp(n, "getFilesDir")) { which_dir = 0; }
     else if (!strcmp(n, "getCacheDir")) { which_dir = 1; }

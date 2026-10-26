@@ -19,6 +19,8 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <ucontext.h>
+#include <glob.h>
+#include <pthread.h>
 #include "elf_loader.h"
 
 extern const char *g_assets_root;
@@ -221,7 +223,43 @@ static AInputQueue *queue;
 static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
 volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) */
-volatile int host_fps_on = 1;                 /* own FPS counter, toggled with R3 */
+volatile int host_ov_mode = 1;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
+char host_ov_lines[4][40];                    /* filled by stats_thread, drawn by libegl */
+static int slurp(const char *path, char *buf, size_t n) {
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    size_t r = fread(buf, 1, n - 1, f); fclose(f); buf[r] = 0; return (int)r;
+}
+static int find_gpu_dir(char *out, size_t n) {
+    static const char *c[] = { "/sys/class/devfreq/ff400000.gpu", "/sys/devices/platform/ff400000.gpu/devfreq/ff400000.gpu", NULL };
+    for (int i = 0; c[i]; i++) { char t[300]; snprintf(t, sizeof t, "%s/load", c[i]); if (access(t, R_OK) == 0) { snprintf(out, n, "%s", c[i]); return 1; } }
+    glob_t g; if (glob("/sys/class/devfreq/*gpu*", 0, NULL, &g) == 0 && g.gl_pathc) { snprintf(out, n, "%s", g.gl_pathv[0]); globfree(&g); return 1; }
+    return 0;
+}
+static void *stats_thread(void *arg) {
+    (void)arg; char gpu[300] = ""; int have_gpu = find_gpu_dir(gpu, sizeof gpu);
+    unsigned long long pt = 0, pi = 0; unsigned long long pp = 0, pw = 0; char b[4096];
+    for (;;) {
+        usleep(500000);
+        /* CPU load from /proc/stat, process usage from /proc/self/stat */
+        int cpu = 0, proc = 0;
+        if (slurp("/proc/stat", b, sizeof b)) { unsigned long long u, n, sy, id, io, ir, so, st; if (sscanf(b, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", &u, &n, &sy, &id, &io, &ir, &so, &st) == 8) {
+            unsigned long long tot = u + n + sy + id + io + ir + so + st, idle = id + io; if (pt && tot > pt) cpu = (int)(100 - 100 * (idle - pi) / (tot - pt)); 
+            unsigned long long ps = 0; char sb[1024]; if (slurp("/proc/self/stat", sb, sizeof sb)) { char *q = strrchr(sb, ')'); unsigned long long ut = 0, stt = 0; if (q && sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %llu %llu", &ut, &stt) == 2) ps = ut + stt; }
+            if (pw && tot > pt) proc = (int)(100 * (ps - pp) / (tot - pt));
+            pp = ps; pw = 1; pt = tot; pi = idle; } }
+        char t[64]; int mhz = 0, temp = 0;
+        if (slurp("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", t, sizeof t)) mhz = atoi(t) / 1000;
+        if (slurp("/sys/class/thermal/thermal_zone0/temp", t, sizeof t)) temp = atoi(t) / 1000;
+        snprintf(host_ov_lines[0], 40, "CPU %d%% %dMHZ %dC", cpu, mhz, temp);
+        if (have_gpu) { int gl = 0, gm = 0; char p[340]; snprintf(p, sizeof p, "%s/load", gpu); if (slurp(p, t, sizeof t)) gl = atoi(t); snprintf(p, sizeof p, "%s/cur_freq", gpu); if (slurp(p, t, sizeof t)) gm = (int)(atoll(t) / 1000000); snprintf(host_ov_lines[1], 40, "GPU %d%% %dMHZ", gl, gm); }
+        else snprintf(host_ov_lines[1], 40, "GPU N/A");
+        long tot = 0, av = 0; if (slurp("/proc/meminfo", b, sizeof b)) { char *q; if ((q = strstr(b, "MemTotal:"))) tot = atol(q + 9); if ((q = strstr(b, "MemAvailable:"))) av = atol(q + 13); }
+        snprintf(host_ov_lines[2], 40, "RAM %ld/%ld MB", (tot - av) / 1024, tot / 1024);
+        long rss = 0; if (slurp("/proc/self/statm", t, sizeof t)) { long a, r2; if (sscanf(t, "%ld %ld", &a, &r2) == 2) rss = r2 * 4096 / 1048576; }
+        snprintf(host_ov_lines[3], 40, "GAME %ld MB CPU %d%%", rss, proc);
+    }
+    return NULL;
+}
 static int touch_down;
 static void send_axes(void);
 static void dpad_axes(const int *d) { /* d-pad = menu navigation: hat axes + left stick axes */
@@ -383,7 +421,7 @@ int main(int argc, char **argv) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
     SDL_Window *win = SDL_CreateWindow("Minecraft PE", 0, 0, 640, 480,
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
@@ -470,6 +508,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] activity started\n");
 
     SDL_GameController *pad = NULL;
+    { pthread_t th; if (pthread_create(&th, NULL, stats_thread, NULL) == 0) pthread_detach(th); }
     int running = 1; int dpad[4] = {0}; float stick[2] = {0}; Uint32 last_tick = SDL_GetTicks();
     while (running && !*finish) {
         SDL_Event ev;
@@ -486,10 +525,23 @@ int main(int argc, char **argv) {
                 case SDL_CONTROLLERBUTTONDOWN:
                 case SDL_CONTROLLERBUTTONUP: {
                     { static int n; if (n++ < 150) fprintf(stderr, "[pad] button %d %s\n", ev.cbutton.button, ev.type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up"); }
-                    int kc = map_button(ev.cbutton.button);
-                    if (kc) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
-                    if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, 134); /* SELECT -> F3: game's debug screen */
-                    if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK && ev.type == SDL_CONTROLLERBUTTONDOWN) host_fps_on = !host_fps_on;
+                    int dn = ev.type == SDL_CONTROLLERBUTTONDOWN, b = ev.cbutton.button;
+                    static int l3, r3;
+                    if (b == SDL_CONTROLLER_BUTTON_LEFTSTICK) l3 = dn;
+                    if (b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) r3 = dn;
+                    if ((b == SDL_CONTROLLER_BUTTON_LEFTSTICK || b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) && dn && l3 && r3) {
+                        host_ov_mode = (host_ov_mode + 1) % 3;           /* L3+R3: off -> FPS -> FPS/CPU/GPU/RAM */
+                        fprintf(stderr, "[pad] overlay mode %d\n", host_ov_mode); break;
+                    }
+                    if (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN || b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                        /* d-pad is read by the game as HAT axes (not as key events) */
+                        static int dp[4];
+                        dp[b == SDL_CONTROLLER_BUTTON_DPAD_UP ? 0 : b == SDL_CONTROLLER_BUTTON_DPAD_DOWN ? 1 : b == SDL_CONTROLLER_BUTTON_DPAD_LEFT ? 2 : 3] = dn;
+                        axes[AXIS_HAT_X] = (float)(dp[3] - dp[2]); axes[AXIS_HAT_Y] = (float)(dp[1] - dp[0]); send_axes();
+                        break;
+                    }
+                    int kc = map_button(b);
+                    if (kc) send_key(dn ? 0 : 1, kc);
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {
