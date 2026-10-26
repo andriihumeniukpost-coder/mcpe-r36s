@@ -10,6 +10,7 @@
 #include <SDL2/SDL.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 EXPORT void *shim_egl_window;
 EXPORT void *shim_egl_ctx;
@@ -58,7 +59,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     ld();
     if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
-    if (n == 200 || n == 600 || n == 1500 || n == 3000) probe_pixels();
+    if (n == 200 || n == 1500) probe_pixels();
     n++;
     SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
 }
@@ -231,7 +232,30 @@ static void probe_state(void) {
         fprintf(stderr, "[gl]   attrib %s loc=%d enabled=%d vbo=%d size=%d type=%x norm=%d stride=%d current=%g %g %g %g\n", nm, l, en, bb, size, type, norm, stride, cur[0], cur[1], cur[2], cur[3]);
     }
 }
+
+static void dump_fb(int frame) {
+    if (!r_glReadPixels) r_glReadPixels = SDL_GL_GetProcAddress("glReadPixels");
+    int W = 640, H = 480;
+    SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
+    unsigned char *buf = malloc((size_t)W * H * 4);
+    if (!buf || !r_glReadPixels) return;
+    r_glReadPixels(0, 0, W, H, 0x1908, 0x1401, buf);
+    const int GX = 40, GY = 24;
+    fprintf(stderr, "[fb] frame %d %dx%d, %dx%d blocks, top row first, hex rgb (4 bits each)\n", frame, W, H, GX, GY);
+    for (int by = GY - 1; by >= 0; by--) {
+        char line[GX * 4 + 8]; int o = 0;
+        for (int bx = 0; bx < GX; bx++) {
+            unsigned r = 0, g = 0, b = 0, c = 0;
+            for (int y = by * H / GY; y < (by + 1) * H / GY; y += 4)
+                for (int x = bx * W / GX; x < (bx + 1) * W / GX; x += 4) { unsigned char *q = buf + ((size_t)y * W + x) * 4; r += q[0]; g += q[1]; b += q[2]; c++; }
+            o += sprintf(line + o, "%x%x%x ", c ? r / c >> 4 : 0, c ? g / c >> 4 : 0, c ? b / c >> 4 : 0);
+        }
+        fprintf(stderr, "[fb] %s\n", line);
+    }
+    free(buf);
+}
 static void probe_pixels(void) {
+    dump_fb(0);
     probe_state();
     if (!r_glReadPixels) r_glReadPixels = SDL_GL_GetProcAddress("glReadPixels");
     if (!r_glReadPixels) return;
