@@ -347,9 +347,23 @@ static void (*r_glDrawArrays)(unsigned, int, int);
 static void (*r_glDrawElements)(unsigned, int, unsigned, const void *);
 static unsigned hb_cur[64], hb_last[64]; static int hb_ncur, hb_nlast, hb_dr[64], hb_vt[64], hb_dr_l[64], hb_vt_l[64]; static unsigned hb_hide;
 static unsigned hb_psh[PC_N][8]; static int hb_npsh[PC_N];
+static unsigned char hb_plain[PC_N];
+static int hb_compute_plain(unsigned pr) {
+    for (int a = 0; a < hb_npsh[pr]; a++) { const char *t = hb_src[hb_psh[pr][a] < PC_N ? hb_psh[pr][a] : 0]; while (t && (t = strstr(t, "#define "))) { t += 8; const char *e = t; while (*e && *e != '\n' && *e != ' ' && *e != '(') e++;
+        int n = (int)(e - t); if (!((n == 4 && !strncmp(t, "MAT4", 4)) || (n == 4 && !strncmp(t, "POS4", 4)) || (n == 4 && !strncmp(t, "POS3", 4)) || (n == 9 && !strncmp(t, "attribute", 9)) || (n == 7 && !strncmp(t, "varying", 7)) || (n == 9 && !strncmp(t, "texture2D", 9)) || (n == 12 && !strncmp(t, "gl_FragColor", 12)) || (n == 9 && !strncmp(t, "_centroid", 9)))) return 0; t = e; } }
+    return hb_npsh[pr] > 0;
+}
+static int hb_void_skip = 1;
+static void hb_state(const char *tag) {
+    static unsigned char (*ise)(unsigned); static void (*gi)(unsigned, int *), (*gb)(unsigned, unsigned char *); if (!ise) { ise = SDL_GL_GetProcAddress("glIsEnabled"); gi = SDL_GL_GetProcAddress("glGetIntegerv"); gb = SDL_GL_GetProcAddress("glGetBooleanv"); }
+    if (!ise || !gi || !gb) return; int df = 0, vpv[4]; unsigned char dm = 0; gi(0x0B74, &df); gb(0x0B72, &dm); gi(0x0BA2, vpv);
+    fprintf(stderr, "[hide-state] %s depthTest=%d depthMask=%d depthFunc=0x%x blend=%d cull=%d viewport=%d,%d,%d,%d prog=%u\n", tag, ise(0x0B71), dm, df, ise(0x0BE2), ise(0x0B44), vpv[0], vpv[1], vpv[2], vpv[3], ft_cur);
+}
+static void hb_state_log(void) { static unsigned last; static int n; if (last != hb_hide) { last = hb_hide; n = 0; } if (n++ < 2) hb_state("hidden draw"); }
+static void hb_state_log_v(void) { static int n; if (n++ < 3) hb_state("void plane"); }
 static int hb_slot(void) { for (int i = 0; i < hb_ncur; i++) if (hb_cur[i] == ft_cur) return i; if (hb_ncur < 64) { hb_cur[hb_ncur] = ft_cur; hb_dr[hb_ncur] = hb_vt[hb_ncur] = 0; return hb_ncur++; } return -1; }
-SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) return; r_glDrawArrays(m, f, c); }
-SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) return; r_glDrawElements(m, c, t, p); }
+SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawArrays(m, f, c); }
+SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawElements(m, c, t, p); }
 static void hb_frame_end(void) {
     memcpy(hb_last, hb_cur, sizeof hb_cur); memcpy(hb_dr_l, hb_dr, sizeof hb_dr); memcpy(hb_vt_l, hb_vt, sizeof hb_vt); hb_nlast = hb_ncur; hb_ncur = 0;
     static int last_idx = -2; int idx = (&host_hide_idx) ? host_hide_idx : -1;
@@ -397,7 +411,7 @@ SOFT static void w_glLinkProgram(unsigned pr) {
     if (!cached) { if (r_glProgramParameteri) r_glProgramParameteri(pr, 0x8257, 1); r_glLinkProgram(pr); }
     int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
     if (!cached && ok && path[0]) { misses++; ov_shc_miss = misses; pc_save(pr, path); }
-    if (pr < PC_N) { hb_npsh[pr] = pc_natt[pr]; memcpy(hb_psh[pr], pc_att[pr], sizeof hb_psh[pr]); pc_natt[pr] = 0; pc_phash[pr] = 0; }
+    if (pr < PC_N) { hb_npsh[pr] = pc_natt[pr]; memcpy(hb_psh[pr], pc_att[pr], sizeof hb_psh[pr]); hb_plain[pr] = (unsigned char)hb_compute_plain(pr); pc_natt[pr] = 0; pc_phash[pr] = 0; }
     clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5 || nl % 50 == 0) fprintf(stderr, "[slow] link program %u %.1f ms %s (total %d programs %.0f ms; cache hits %d misses %d)\n", pr, ms, cached ? "(cached)" : "", nl, tot, hits, misses); }
     if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
 }
