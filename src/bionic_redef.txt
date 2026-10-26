@@ -64,3 +64,10 @@ bc_access access
 bc_fclose fclose
 bc_fdatasync fdatasync
 bc_fileno fileno
+bc_ferror ferror
+bc_fseek fseek
+bc_fseeko fseeko
+bc_ftell ftell
+bc_ftello ftello
+bc_rewind rewind
+bc_fdopen fdopen

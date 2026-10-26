@@ -74,11 +74,21 @@ EXPORT void (*signal(int sig, void (*h)(int)))(int) { return do_signal(sig, h); 
 /* Bionic FILE is 84 bytes; stdin/stdout/stderr are &__sF[0..2]. */
 #define BFILE_SZ 84
 EXPORT char __sF[3 * BFILE_SZ];
+/* Bionic FILE look-alike: game code reads the fd via the inline macro fileno(p) = (short)p->_file (offset 14) */
+#define BF_MAGIC 0xB10FF11Eu
+struct bfile { char pad[14]; short file; FILE *real; unsigned magic; char rest[BFILE_SZ - 24]; };
+static FILE *wrapf(FILE *real) {
+    if (!real) return NULL;
+    struct bfile *b = calloc(1, sizeof *b);
+    int (*fn)(FILE *) = R("fileno");
+    b->file = (short)fn(real); b->real = real; b->magic = BF_MAGIC; return (FILE *)b;
+}
 static FILE *mapf(FILE *f) {
     char *p = (char *)f;
     if (p >= __sF && p < __sF + sizeof __sF) {
         switch ((p - __sF) / BFILE_SZ) { case 0: return stdin; case 1: return stdout; default: return stderr; }
     }
+    if (f && ((struct bfile *)f)->magic == BF_MAGIC) return ((struct bfile *)f)->real;
     return f;
 }
 EXPORT int bc_vfprintf(FILE *f, const char *fmt, va_list ap) {
@@ -104,9 +114,16 @@ EXPORT size_t bc_fwrite(const void *p, size_t s, size_t n, FILE *f) { size_t (*r
     size_t x = r(p, s, n, g); int e = errno; if (g != stdout && g != stderr && wlog < 60) { wlog++; fprintf(stderr, "[io] fwrite(%p, %zu*%zu) = %zu err=%d\n", (void *)g, s, n, x, x != n ? e : 0); } errno = e; return x; }
 EXPORT size_t bc_fread(void *p, size_t s, size_t n, FILE *f) { size_t (*r)(void *, size_t, size_t, FILE *) = R("fread"); return r(p, s, n, mapf(f)); }
 EXPORT int bc_fflush(FILE *f) { int (*r)(FILE *) = R("fflush"); int x = f ? r(mapf(f)) : r(NULL); int e = errno; if (x && wlog < 120) { wlog++; fprintf(stderr, "[io] fflush(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
-EXPORT int bc_fclose(FILE *f) { int (*r)(FILE *) = R("fclose"); int x = r(mapf(f)); int e = errno; if (wlog < 120) { wlog++; fprintf(stderr, "[io] fclose(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
+EXPORT int bc_fclose(FILE *f) { int (*r)(FILE *) = R("fclose"); int w = f && ((struct bfile *)f)->magic == BF_MAGIC; FILE *g = mapf(f); int x = r(g); int e = errno; if (w) { ((struct bfile *)f)->magic = 0; free(f); } errno = e; return x; }
+EXPORT int bc_ferror(FILE *f) { int (*r)(FILE *) = R("ferror"); return r(mapf(f)); }
+EXPORT int bc_fseek(FILE *f, long o, int w) { int (*r)(FILE *, long, int) = R("fseek"); return r(mapf(f), o, w); }
+EXPORT int bc_fseeko(FILE *f, long o, int w) { int (*r)(FILE *, long, int) = R("fseeko"); return r(mapf(f), o, w); }
+EXPORT long bc_ftell(FILE *f) { long (*r)(FILE *) = R("ftell"); return r(mapf(f)); }
+EXPORT long bc_ftello(FILE *f) { long (*r)(FILE *) = R("ftello"); return r(mapf(f)); }
+EXPORT void bc_rewind(FILE *f) { void (*r)(FILE *) = R("rewind"); r(mapf(f)); }
+EXPORT FILE *bc_fdopen(int fd, const char *m) { FILE *(*r)(int, const char *) = R("fdopen"); return wrapf(r(fd, m)); }
 EXPORT int bc_fdatasync(int fd) { int (*r)(int) = R("fdatasync"); int x = r(fd); int e = errno; if (wlog < 120) { wlog++; fprintf(stderr, "[io] fdatasync(%d) = %d errno=%d\n", fd, x, e); } errno = e; return x; }
-EXPORT int bc_fileno(FILE *f) { int (*r)(FILE *) = R("fileno"); int x = r(mapf(f)); if (wlog < 120) { wlog++; fprintf(stderr, "[io] fileno(%p) = %d\n", (void *)f, x); } return x; }
+EXPORT int bc_fileno(FILE *f) { int (*r)(FILE *) = R("fileno"); return r(mapf(f)); }
 EXPORT int bc_setvbuf(FILE *f, char *b, int m, size_t s) { int (*r)(FILE *, char *, int, size_t) = R("setvbuf"); return r(mapf(f), b, m, s); }
 EXPORT int bc_feof(FILE *f) { int (*r)(FILE *) = R("feof"); return r(mapf(f)); }
 EXPORT int bc_fscanf(FILE *f, const char *fmt, ...) {
@@ -436,10 +453,10 @@ EXPORT DIR *bc_opendir(const char *p) {
     if (!d) { errno = e; IOFAIL("opendir(%s)", p); } errno = e; return d;
 }
 EXPORT FILE *bc_fopen(const char *p, const char *m) {
-    FILE *(*r)(const char *, const char *) = R("fopen"); FILE *f = r(p, m); int e = errno;
+    FILE *(*r)(const char *, const char *) = R("fopen"); FILE *f = r(p, m); int e = errno; FILE *w = wrapf(f); errno = e;
     if (!f && e != ENOENT) { errno = e; IOFAIL("fopen(%s, %s)", p, m); }
     else if (iointerest(p) && iolog < 150) { iolog++; fprintf(stderr, "[io] fopen(%s, %s) = %p\n", p, m, (void *)f); }
-    errno = e; return f;
+    errno = e; return w;
 }
 EXPORT int bc_fcntl(int fd, int cmd, ...) {
     va_list ap; va_start(ap, cmd); long arg = va_arg(ap, long); va_end(ap);
