@@ -142,6 +142,10 @@ static void J_DeleteRef(JNIEnv *e, jobject o) { (void)e; (void)o; }
 static jboolean J_False(JNIEnv *e) { (void)e; return 0; }
 static void J_Void(JNIEnv *e) { (void)e; }
 static jobject J_Null(JNIEnv *e) { (void)e; return NULL; }
+static jobject J_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list a) { (void)e; (void)m; (void)a; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
+static jobject J_NewObjectA(JNIEnv *e, jclass c, jmethodID m, const jvalue *a) { (void)e; (void)m; (void)a; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
+static jint J_PushLocalFrame(JNIEnv *e, jint n) { (void)e; (void)n; return 0; }
+static jobject J_PopLocalFrame(JNIEnv *e, jobject r) { (void)e; return r; }
 static jobject J_NewObject(JNIEnv *e, jclass c, jmethodID m, ...) { (void)e; (void)m; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
 
 static jstring J_NewStringUTF(JNIEnv *e, const char *s) { (void)e; return mkstr(s); }
@@ -202,7 +206,8 @@ JNIEnv *fake_env(void) {
         iface.NewGlobalRef = J_NewGlobalRef; iface.NewLocalRef = J_NewGlobalRef;
         iface.DeleteGlobalRef = J_DeleteRef; iface.DeleteLocalRef = J_DeleteRef;
         iface.ExceptionCheck = J_False; iface.ExceptionClear = J_Void; iface.ExceptionDescribe = J_Void; iface.ExceptionOccurred = J_Null;
-        iface.NewObject = J_NewObject;
+        iface.NewObject = J_NewObject; iface.NewObjectV = J_NewObjectV; iface.NewObjectA = J_NewObjectA;
+        iface.PushLocalFrame = J_PushLocalFrame; iface.PopLocalFrame = J_PopLocalFrame;
         iface.CallObjectMethod = C_Object; iface.CallObjectMethodV = C_ObjectV; iface.CallObjectMethodA = C_ObjectA;
         iface.CallIntMethod = C_Int; iface.CallIntMethodV = C_IntV; iface.CallIntMethodA = C_IntA;
         iface.CallBooleanMethod = C_Boolean; iface.CallBooleanMethodV = C_BooleanV; iface.CallBooleanMethodA = C_BooleanA;

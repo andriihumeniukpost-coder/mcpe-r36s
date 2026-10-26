@@ -56,7 +56,10 @@ void host_report(const char *what, void *ra) {
     uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off);
     fprintf(stderr, "[trace] tid=%d %s called from %s+0x%lx (ra=%p)\n", (int)syscall(SYS_gettid), what, w ? w : "?", (unsigned long)off, ra);
     volatile uintptr_t here = 0;
-    scan_stack((uintptr_t *)&here, 700);
+    { void *bt[40]; int n = backtrace(bt, 40);
+      for (int i = 0; i < n; i++) { uintptr_t o; const char *w = elf_where((uintptr_t)bt[i], &o);
+          fprintf(stderr, "[bt] #%d %p %s+0x%lx\n", i, bt[i], w ? w : "?", (unsigned long)o); } }
+    scan_stack((uintptr_t *)&here, 300);
     fflush(stderr);
 }
 
