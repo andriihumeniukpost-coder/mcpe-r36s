@@ -224,6 +224,7 @@ static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
 volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) */
 volatile int host_vsync_req = -1;              /* SELECT + d-pad up/down: vsync on/off (applied on the render thread) */
+volatile int host_scale_req = 0;               /* SELECT + L1/R1: render scale down/up (applied on the render thread) */
 volatile int host_hide_idx = -1;              /* draw bisect (SELECT + d-pad left/right) */
 volatile int host_ov_mode = 1;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
 char host_ov_lines[8][48];                    /* filled by stats_thread, drawn by libegl */
@@ -621,6 +622,7 @@ int main(int argc, char **argv) {
                         fprintf(stderr, "[pad] overlay mode %d\n", host_ov_mode); break;
                     }
                     { static int sel; if (b == SDL_CONTROLLER_BUTTON_BACK) sel = dn;
+                      if (sel && dn && (b == SDL_CONTROLLER_BUTTON_LEFTSHOULDER || b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) { host_scale_req = b == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER ? 1 : -1; fprintf(stderr, "[pad] scale request %d\n", host_scale_req); break; }
                       if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN)) { host_vsync_req = b == SDL_CONTROLLER_BUTTON_DPAD_UP ? 1 : 0; fprintf(stderr, "[pad] vsync request %d\n", host_vsync_req); break; }
                       if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
                           host_hide_idx += b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ? 1 : -1; if (host_hide_idx < -1) host_hide_idx = -1;

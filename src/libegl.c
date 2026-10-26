@@ -60,6 +60,7 @@ extern char host_ov_lines[8][48] __attribute__((weak));      /* stats lines from
 static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
 extern volatile int host_hide_idx __attribute__((weak));     /* draw-bisect: -1 off, else index into the programs drawn last frame */
 static char ov_hide_txt[48];
+static int sc_pct(void);
 extern volatile int host_vsync_req __attribute__((weak));   /* -1 none, 0/1 = set swap interval on the render thread */
 static int g_vsync = -1;
 static char *hb_src[4096];
@@ -103,7 +104,7 @@ static void ov_build(int mode) {
     if (mode >= 2 && &host_ov_lines[0][0]) {
         int n = ov_hide_txt[0] ? 2 : 1; char l[64];
         snprintf(l, sizeof l, "FRAME %.1fMS WORST %.0f", ov_frame_avg, ov_frame_worst); ov_text(n++, l, 0xFFFFFF);
-        snprintf(l, sizeof l, "LOGIC %.1f SWAP %.1f VSYNC %s", ov_logic_ms, ov_swap_ms, g_vsync > 0 ? "ON" : g_vsync == 0 ? "OFF" : "?"); ov_text(n++, l, 0xFFFFFF);
+        snprintf(l, sizeof l, "LOGIC %.1f SWAP %.1f SCALE %d%%", ov_logic_ms, ov_swap_ms, sc_pct()); ov_text(n++, l, 0xFFFFFF);
         for (int i = 0; i < 8 && n < 15; i++) if (host_ov_lines[i][0]) { unsigned c = i < 2 ? 0x80FF80 : i < 4 ? 0x80C0FF : i < 6 ? 0xFFD080 : 0xD0D0D0; ov_text(n++, host_ov_lines[i], c); }
         snprintf(l, sizeof l, "SHADERS %d NEW %d", ov_shc_hits, ov_shc_miss); ov_text(n++, l, 0xD0D0D0);
         ov_lines_used = n - 1;
@@ -174,9 +175,69 @@ static void draw_overlay(void) {
     vp(vpv[0], vpv[1], vpv[2], vpv[3]); cm(mask[0], mask[1], mask[2], mask[3]);
     if (!bl_was) dis(0x0BE2); if (dt_was) en(0x0B71); if (cf_was) en(0x0B44); if (st_was) en(0x0B90); if (sc_was) en(0x0C11);
 }
+
+/* ---- render scale: draw the game into a smaller offscreen target and upscale it at swap (less GPU work per frame) ---- */
+extern volatile int host_scale_req __attribute__((weak));   /* -1 lower, +1 higher */
+static const int sc_levels[] = {100, 85, 75, 67, 50};
+static int sc_idx, sc_active, sc_w, sc_h, sc_fbo, sc_tex, sc_rb, sc_game_fb, sc_inited;
+static void (*s_genfb)(int, unsigned *), (*s_bindfb)(unsigned, unsigned), (*s_fbtex)(unsigned, unsigned, unsigned, unsigned, int), (*s_fbrb)(unsigned, unsigned, unsigned, unsigned), (*s_genrb)(int, unsigned *), (*s_bindrb)(unsigned, unsigned), (*s_rbst)(unsigned, unsigned, int, int);
+static void (*s_gent)(int, unsigned *), (*s_bindt)(unsigned, unsigned), (*s_teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*s_texpar)(unsigned, unsigned, int), (*s_blit)(int, int, int, int, int, int, int, int, unsigned, unsigned), (*s_vp)(int, int, int, int), (*s_gi)(unsigned, int *), (*s_en)(unsigned), (*s_dis)(unsigned);
+static unsigned (*s_chk)(unsigned); static unsigned char (*s_ise)(unsigned);
+static void (*r_glBindFramebuffer)(unsigned, unsigned), (*r_glViewport)(int, int, int, int), (*r_glScissor)(int, int, int, int);
+static void sc_load(void) {
+    if (s_blit) return;
+    s_genfb = SDL_GL_GetProcAddress("glGenFramebuffers"); s_bindfb = SDL_GL_GetProcAddress("glBindFramebuffer"); s_fbtex = SDL_GL_GetProcAddress("glFramebufferTexture2D"); s_fbrb = SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
+    s_genrb = SDL_GL_GetProcAddress("glGenRenderbuffers"); s_bindrb = SDL_GL_GetProcAddress("glBindRenderbuffer"); s_rbst = SDL_GL_GetProcAddress("glRenderbufferStorage");
+    s_gent = SDL_GL_GetProcAddress("glGenTextures"); s_bindt = SDL_GL_GetProcAddress("glBindTexture"); s_teximg = SDL_GL_GetProcAddress("glTexImage2D"); s_texpar = SDL_GL_GetProcAddress("glTexParameteri");
+    s_blit = SDL_GL_GetProcAddress("glBlitFramebuffer"); s_vp = SDL_GL_GetProcAddress("glViewport"); s_gi = SDL_GL_GetProcAddress("glGetIntegerv"); s_en = SDL_GL_GetProcAddress("glEnable"); s_dis = SDL_GL_GetProcAddress("glDisable");
+    s_chk = SDL_GL_GetProcAddress("glCheckFramebufferStatus"); s_ise = SDL_GL_GetProcAddress("glIsEnabled");
+    if (!sc_inited) { sc_inited = 1; const char *d = getenv("MCPE_DATADIR"); if (d) { char pth[1200]; snprintf(pth, sizeof pth, "%s/scale.cfg", d); FILE *f = fopen(pth, "r"); int v = -1; if (f) { if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); } if (v >= 0 && v < 5) sc_idx = v; } }
+}
+static int sc_ready(void) { return s_blit && s_genfb && s_bindfb && s_fbtex && s_fbrb && s_genrb && s_bindrb && s_rbst && s_gent && s_bindt && s_teximg && s_texpar && s_vp && s_gi && s_chk && s_en && s_dis && s_ise; }
+static void sc_build(int W, int H) {
+    sc_load(); if (!sc_ready()) { sc_active = 0; return; }
+    int pct = sc_levels[sc_idx];
+    if (pct >= 100) { sc_active = 0; return; }
+    int w = (W * pct / 100) & ~1, h = (H * pct / 100) & ~1; if (w < 64) w = 64; if (h < 48) h = 48;
+    int pf = 0, pt = 0, prb = 0; s_gi(0x8CA6, &pf); s_gi(0x8069, &pt); s_gi(0x8CA7, &prb);
+    if (!sc_fbo) { s_genfb(1, (unsigned *)&sc_fbo); s_gent(1, (unsigned *)&sc_tex); s_genrb(1, (unsigned *)&sc_rb); }
+    s_bindt(0x0DE1, sc_tex); s_teximg(0x0DE1, 0, 0x1908, w, h, 0, 0x1908, 0x1401, NULL);
+    s_texpar(0x0DE1, 0x2801, 0x2601); s_texpar(0x0DE1, 0x2800, 0x2601); s_texpar(0x0DE1, 0x2802, 0x812F); s_texpar(0x0DE1, 0x2803, 0x812F);
+    s_bindrb(0x8D41, sc_rb); s_rbst(0x8D41, 0x88F0, w, h);
+    s_bindfb(0x8D40, sc_fbo); s_fbtex(0x8D40, 0x8CE0, 0x0DE1, sc_tex, 0); s_fbrb(0x8D40, 0x821A, 0x8D41, sc_rb);
+    unsigned st = s_chk(0x8D40);
+    s_bindfb(0x8D40, pf); s_bindt(0x0DE1, pt); s_bindrb(0x8D41, prb);
+    if (st != 0x8CD5) { fprintf(stderr, "[scale] FBO %dx%d incomplete (0x%x), scaling disabled\n", w, h, st); sc_active = 0; return; }
+    sc_w = w; sc_h = h; sc_active = 1; fprintf(stderr, "[scale] %d%% -> %dx%d offscreen target\n", pct, w, h);
+}
+static void sc_set_index(int idx, int W, int H) {
+    sc_load(); if (idx < 0) idx = 0; if (idx > 4) idx = 4; sc_idx = idx;
+    const char *d = getenv("MCPE_DATADIR"); if (d) { char pth[1200]; snprintf(pth, sizeof pth, "%s/scale.cfg", d); FILE *f = fopen(pth, "w"); if (f) { fprintf(f, "%d\n", sc_idx); fclose(f); } }
+    sc_build(W, H);
+}
+SOFT static void w_glBindFramebuffer(unsigned t, unsigned f) { sc_game_fb = f; if (f == 0 && sc_active) f = sc_fbo; r_glBindFramebuffer(t, f); }
+SOFT static void w_glViewport(int x, int y, int w, int h) { if (sc_active && sc_game_fb == 0) { int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H); x = x * sc_w / W; w = w * sc_w / W; y = y * sc_h / H; h = h * sc_h / H; } r_glViewport(x, y, w, h); }
+SOFT static void w_glScissor(int x, int y, int w, int h) { if (sc_active && sc_game_fb == 0) { int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H); x = x * sc_w / W; w = w * sc_w / W; y = y * sc_h / H; h = h * sc_h / H; } r_glScissor(x, y, w, h); }
+static int sc_vp_save[4], sc_sc_was;
+static void sc_resolve(void) {  /* before the overlay: copy the small frame onto the window framebuffer */
+    int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
+    if (&host_scale_req && host_scale_req != 0) { int rq = host_scale_req; host_scale_req = 0; sc_set_index(sc_idx + (rq > 0 ? -1 : 1), W, H); /* "higher" = more percent = lower index */ }
+    if (!sc_inited) { sc_load(); if (sc_levels[sc_idx] < 100) sc_build(W, H); }
+    if (!sc_active || sc_game_fb != 0) return;
+    s_gi(0x0BA2, sc_vp_save); sc_sc_was = s_ise(0x0C11); if (sc_sc_was) s_dis(0x0C11);
+    s_bindfb(0x8CA8, sc_fbo); s_bindfb(0x8CA9, 0);
+    s_blit(0, 0, sc_w, sc_h, 0, 0, W, H, 0x4000, 0x2601);
+    s_bindfb(0x8D40, 0); s_vp(0, 0, W, H);
+}
+static void sc_restore(void) {  /* after the swap: draw into the small target again */
+    if (sc_active && sc_game_fb == 0) { s_bindfb(0x8D40, sc_fbo); s_vp(sc_vp_save[0], sc_vp_save[1], sc_vp_save[2], sc_vp_save[3]); if (sc_sc_was) s_en(0x0C11); }
+    else if (!sc_active) { s_bindfb(0x8D40, sc_game_fb); }
+}
+static int sc_pct(void) { return sc_levels[sc_idx]; }
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
+    sc_resolve();
     if (n == 0) { int d = 0, st = 0; SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &d); SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &st); fprintf(stderr, "[gl] depth bits %d stencil bits %d\n", d, st); }
     if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
@@ -193,6 +254,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
           if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
         if (&host_vsync_req && host_vsync_req >= 0) { int v = host_vsync_req; host_vsync_req = -1; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] vsync toggled -> %d (r=%d, now %d)\n", v, r, SDL_GL_GetSwapInterval()); }
         SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
+        sc_restore();
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
         s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
         { static double a_g, a_c, a_s; static int a_n; static struct timespec a_t; double gw = 0, gc = 0;
@@ -605,7 +667,7 @@ static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glDrawArrays), MAP(glDrawElements), MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform1fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glBindFramebuffer), MAP(glViewport), MAP(glScissor), MAP(glDrawArrays), MAP(glDrawElements), MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform1fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
