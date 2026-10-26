@@ -49,6 +49,9 @@ EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle
     if (!ctx) return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, NULL) == 0;
     return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, (SDL_GLContext)shim_egl_ctx) == 0;
 }
+static unsigned (*r_glGetError)(void);
+static const unsigned char *(*r_glGetString)(unsigned);
+static void ld(void);
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
@@ -117,8 +120,6 @@ static void (*r_glGetShaderInfoLog)(unsigned, int, int *, char *);
 static void (*r_glGetProgramInfoLog)(unsigned, int, int *, char *);
 static void (*r_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
 static void (*r_glShaderSource)(unsigned, int, const char *const *, const int *);
-static unsigned (*r_glGetError)(void);
-static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void) {
     if (r_glGetError) return;
 #define L(n) r_##n = SDL_GL_GetProcAddress(#n)
