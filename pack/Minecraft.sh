@@ -62,6 +62,8 @@ for d in /usr/lib/arm-linux-gnueabihf /usr/lib32 /lib/arm-linux-gnueabihf; do [ 
 echo "== 32-bit lib dir: ${LIBSYS:-NOT FOUND}"
 
 export LD_LIBRARY_PATH="$GAMEDIR/libs:$LIBSYS:$LD_LIBRARY_PATH"
+# safe mode: create an empty file mcpe/nopipe to turn off the pipelined presenter (if the screen stays black)
+[ -f "$GAMEDIR/nopipe" ] && export MCPE_PIPE=0 && echo "== pipelined presenter disabled (nopipe file)"
 export SDL_GAMECONTROLLERCONFIG_FILE="$controlfolder/gamecontrollerdb.txt"
 [ -n "$sdl_controllerconfig" ] && export SDL_GAMECONTROLLERCONFIG="$sdl_controllerconfig"
 rm -f "$GAMEDIR"/.[0-9]* "$GAMEDIR"/ldtrace* 2>/dev/null   # leftovers of earlier LD_DEBUG runs
