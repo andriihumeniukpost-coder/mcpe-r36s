@@ -159,7 +159,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
         static struct timespec w_end, c_end; static double g_wall, g_cpu, s_wall, s_cpu; static int frames, init; static struct timespec rep;
         struct timespec w0, c0, w1, c1; clock_gettime(CLOCK_MONOTONIC, &w0); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
         if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
-        { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_NOFINISH") == NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
+        { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_FINISH") != NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
           if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
         SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
@@ -254,8 +254,13 @@ SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, co
     char *cp[8]; const char *np[8]; int k = n < 8 ? n : 8;
     for (int i = 0; i < k; i++) {
         size_t L = len && len[i] >= 0 ? (size_t)len[i] : strlen(src[i]);
-        char *o = malloc(L * 2 + 1); size_t oi = 0;
-        for (size_t j = 0; j < L; ) { if (j + 4 <= L && !memcmp(src[i] + j, "lowp", 4)) { memcpy(o + oi, "mediump", 7); oi += 7; j += 4; } else o[oi++] = src[i][j++]; }
+        char *o = malloc(L * 2 + 64); size_t oi = 0;
+        static const char *prec; if (!prec) { prec = getenv("MCPE_PREC"); if (!prec) prec = "highp"; }
+        size_t pl = strlen(prec);
+        for (size_t j = 0; j < L; ) {
+            if (j + 4 <= L && !memcmp(src[i] + j, "lowp", 4)) { memcpy(o + oi, prec, pl); oi += pl; j += 4; }
+            else if (j + 7 <= L && !memcmp(src[i] + j, "mediump", 7)) { memcpy(o + oi, prec, pl); oi += pl; j += 7; }
+            else o[oi++] = src[i][j++]; }
         o[oi] = 0; cp[i] = o; np[i] = o;
     }
     r_glShaderSource(sh, k, np, NULL);
