@@ -141,7 +141,15 @@ SOFT static void w_glLinkProgram(unsigned pr) {
 SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, const int *len) {
     static int c; if (c < 8) { c++; fprintf(stderr, "[gl] ==== shader %u source (%d parts)\n", sh, n);
         for (int i = 0; i < n; i++) fprintf(stderr, "%.3000s\n", src[i]); fprintf(stderr, "[gl] ==== end\n"); }
-    r_glShaderSource(sh, n, src, len);
+    char *cp[8]; const char *np[8]; int k = n < 8 ? n : 8;
+    for (int i = 0; i < k; i++) {
+        size_t L = len && len[i] >= 0 ? (size_t)len[i] : strlen(src[i]);
+        char *o = malloc(L * 2 + 1); size_t oi = 0;
+        for (size_t j = 0; j < L; ) { if (j + 4 <= L && !memcmp(src[i] + j, "lowp", 4)) { memcpy(o + oi, "mediump", 7); oi += 7; j += 4; } else o[oi++] = src[i][j++]; }
+        o[oi] = 0; cp[i] = o; np[i] = o;
+    }
+    r_glShaderSource(sh, k, np, NULL);
+    for (int i = 0; i < k; i++) free(cp[i]);
 }
 SOFT static void w_glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void *p) {
     static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glTexImage2D tgt=%x lvl=%d ifmt=%x %dx%d fmt=%x type=%x data=%s\n", t, l, i, w, h, f, ty, p ? "yes" : "null"); }
@@ -159,6 +167,7 @@ SOFT static void w_glTexStorage2DEXT(unsigned t, int lv, unsigned f, int w, int 
 SOFT static void w_glTexSubImage2D(unsigned t, int l, int x, int y, int w, int h, unsigned f, unsigned ty, const void *p) {
     static int c; if (c < 40) { c++; const unsigned char *b = p; fprintf(stderr, "[gl] glTexSubImage2D lvl=%d @%d,%d %dx%d fmt=%x type=%x data=%s [%02x %02x %02x %02x %02x %02x %02x %02x]\n", l, x, y, w, h, f, ty, p ? "yes" : "null", p ? b[0] : 0, p ? b[1] : 0, p ? b[2] : 0, p ? b[3] : 0, p ? b[4] : 0, p ? b[5] : 0, p ? b[6] : 0, p ? b[7] : 0); }
     r_glTexSubImage2D(t, l, x, y, w, h, f, ty, p);
+    { unsigned e = r_glGetError ? r_glGetError() : 0; if (e) { static int ec; if (ec++ < 30) fprintf(stderr, "[gl] glTexSubImage2D ERROR 0x%x (%dx%d)\n", e, w, h); } }
 }
 SOFT static void w_glTexParameteri(unsigned t, unsigned pn, int v) {
     static int c; if (c < 30) { c++; fprintf(stderr, "[gl] glTexParameteri tgt=%x pname=%x val=%x\n", t, pn, v); }
@@ -177,6 +186,7 @@ static void (*r_glReadPixels)(int, int, int, int, unsigned, unsigned, void *);
 SOFT static void w_glTexStorage2D(unsigned t, int lv, unsigned f, int w, int h) {
     static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glTexStorage2D tgt=%x levels=%d ifmt=%x %dx%d\n", t, lv, f, w, h); }
     r_glTexStorage2D(t, lv, f, w, h);
+    { unsigned e = r_glGetError ? r_glGetError() : 0; if (e) fprintf(stderr, "[gl] glTexStorage2D ERROR 0x%x\n", e); }
 }
 SOFT static void w_glUniform1i(int l, int v) {
     static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glUniform1i loc=%d val=%d\n", l, v); }
@@ -230,6 +240,21 @@ static void probe_state(void) {
     glGetIntegerv_(0x8B8D, &prog); glGetIntegerv_(0x8069, &tex); glGetIntegerv_(0x84E0, &unit);
     fprintf(stderr, "[gl] STATE program=%d tex2d_binding=%d active_unit=%x\n", prog, tex, unit);
     if (tex) { int v[4] = {0}; for (int i = 0; i < 4; i++) glGetTexParameteriv_(0x0DE1, 0x2800 + i, &v[i]); fprintf(stderr, "[gl]   tex params mag=%x min=%x wrapS=%x wrapT=%x\n", v[0], v[1], v[2], v[3]); }
+    if (tex) {
+        static void (*gfb)(int, unsigned *), (*bfb)(unsigned, unsigned), (*ftx)(unsigned, unsigned, unsigned, unsigned, int), (*dfb)(int, const unsigned *);
+        static unsigned (*cfs)(unsigned); static void (*gtl)(unsigned, int, unsigned, int *);
+        if (!gfb) { gfb = SDL_GL_GetProcAddress("glGenFramebuffers"); bfb = SDL_GL_GetProcAddress("glBindFramebuffer"); ftx = SDL_GL_GetProcAddress("glFramebufferTexture2D");
+            cfs = SDL_GL_GetProcAddress("glCheckFramebufferStatus"); dfb = SDL_GL_GetProcAddress("glDeleteFramebuffers"); gtl = SDL_GL_GetProcAddress("glGetTexLevelParameteriv"); }
+        int tw = 0, th = 0; if (gtl) { gtl(0x0DE1, 0, 0x1000, &tw); gtl(0x0DE1, 0, 0x1001, &th); }
+        int prevfb = 0; glGetIntegerv_(0x8CA6, &prevfb);
+        unsigned fb = 0; gfb(1, &fb); bfb(0x8D40, fb); ftx(0x8D40, 0x8CE0, 0x0DE1, tex, 0);
+        unsigned st = cfs(0x8D40);
+        fprintf(stderr, "[gl]   bound tex %d size %dx%d fbo status=%x\n", tex, tw, th, st);
+        if (st == 0x8CD5) { static const int tp[][2] = {{0,0},{1,1},{16,16},{70,330},{100,100},{200,200},{8,8},{300,50}};
+            for (int i = 0; i < 8; i++) { unsigned char px[4] = {0}; if (!r_glReadPixels) r_glReadPixels = SDL_GL_GetProcAddress("glReadPixels");
+                r_glReadPixels(tp[i][0], tp[i][1], 1, 1, 0x1908, 0x1401, px); fprintf(stderr, "[gl]   texel(%d,%d)= %02x %02x %02x %02x\n", tp[i][0], tp[i][1], px[0], px[1], px[2], px[3]); } }
+        bfb(0x8D40, prevfb); dfb(1, &fb);
+    }
     if (!prog) return;
     glGetProgramiv_(prog, 0x8B86, &nu); glGetProgramiv_(prog, 0x8B89, &na);
     for (int i = 0; i < nu; i++) {
@@ -286,13 +311,29 @@ static void probe_pixels(void) {
     }
 }
 
+static void (*r_glGenTextures)(int, unsigned *);
+static void (*r_glBindTexture)(unsigned, unsigned);
+static void (*r_glDeleteTextures)(int, const unsigned *);
+SOFT static void w_glGenTextures(int n, unsigned *ids) {
+    static int c; r_glGenTextures(n, ids);
+    if (c < 80) { c++; fprintf(stderr, "[gl] glGenTextures n=%d ->", n); for (int i = 0; i < n && i < 8; i++) fprintf(stderr, " %u", ids[i]); fprintf(stderr, "\n"); }
+}
+SOFT static void w_glBindTexture(unsigned t, unsigned id) {
+    static int c; if (c < 120) { c++; fprintf(stderr, "[gl] glBindTexture %x %u\n", t, id); }
+    r_glBindTexture(t, id);
+}
+SOFT static void w_glDeleteTextures(int n, const unsigned *ids) {
+    fprintf(stderr, "[gl] glDeleteTextures n=%d first=%u\n", n, n > 0 ? ids[0] : 0);
+    r_glDeleteTextures(n, ids);
+}
+
 #define MAP(n) { #n, (void **)&r_##n, (void *)w_##n }
 static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glUniform1f), MAP(glUniform2f), MAP(glUniform3f), MAP(glUniform4f),
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
