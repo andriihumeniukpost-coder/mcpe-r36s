@@ -121,9 +121,12 @@ EXPORT int bc_fscanf(FILE *f, const char *fmt, ...) {
 #define B_C 0x20
 #define B_X 0x40
 #define B_B 0x80
-EXPORT char _ctype_[257];
-EXPORT short _tolower_tab_[257];
-EXPORT short _toupper_tab_[257];
+static char ctype_arr[257];
+static short tolower_arr[257], toupper_arr[257];
+/* bionic exports these as pointer variables to the 257-entry tables */
+EXPORT const char *_ctype_ = ctype_arr;
+EXPORT const short *_tolower_tab_ = tolower_arr;
+EXPORT const short *_toupper_tab_ = toupper_arr;
 __attribute__((constructor)) static void init_ctype(void) {
     for (int c = 0; c < 256; c++) {
         int f = 0;
@@ -137,11 +140,11 @@ __attribute__((constructor)) static void init_ctype(void) {
             if (isxdigit(c)) f |= B_X;
             if (c == ' ') f |= B_B;
         }
-        _ctype_[c + 1] = (char)f;
-        _tolower_tab_[c + 1] = (short)(c < 128 ? tolower(c) : c);
-        _toupper_tab_[c + 1] = (short)(c < 128 ? toupper(c) : c);
+        ctype_arr[c + 1] = (char)f;
+        tolower_arr[c + 1] = (short)(c < 128 ? tolower(c) : c);
+        toupper_arr[c + 1] = (short)(c < 128 ? toupper(c) : c);
     }
-    _tolower_tab_[0] = _toupper_tab_[0] = -1;
+    tolower_arr[0] = toupper_arr[0] = -1;
 }
 
 /* ------------------------------------------------------- sysconf */
