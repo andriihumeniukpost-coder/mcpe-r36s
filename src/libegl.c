@@ -55,10 +55,13 @@ static unsigned (*r_glGetError)(void);
 static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void);
 static void probe_pixels(void);
-extern volatile int host_cursor[3] __attribute__((weak));
-extern volatile int host_ov_mode __attribute__((weak));      /* 0 off, 1 FPS, 2 full stats */
-extern char host_ov_lines[4][40] __attribute__((weak));      /* CPU / GPU / RAM / GAME lines from the host sampler */
+extern volatile int host_ov_mode __attribute__((weak));      /* 0 off, 1 big FPS, 2 full stats */
+extern char host_ov_lines[8][48] __attribute__((weak));      /* stats lines from the host sampler */
+static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
 static int fps_value;
+static double ov_logic_ms, ov_logic_cpu, ov_swap_ms;         /* 0.5 s averages, filled in eglSwapBuffers */
+static double ov_frame_avg, ov_frame_worst;
+static int ov_shc_hits, ov_shc_miss; static double ov_shc_ms;
 /* 3x5 font: digits, A-Z, a few symbols (rows top->bottom, 3 bits each) */
 static const unsigned char font_digits[10][5] = { {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7} };
 static const unsigned char font_alpha[26][5] = {
@@ -71,81 +74,99 @@ static const unsigned char *glyph(char c) {
     if (c >= 'a' && c <= 'z') return font_alpha[c - 'a'];
     switch (c) { case '.': return dot; case ':': return colon; case '%': return pct; case '/': return slash; case '-': return dash; default: return blank; }
 }
-#define OVW 128
-#define OVH 32
+#define OVW 192
+#define OVH 64
 static unsigned char ov_buf[OVW * OVH * 4];
-static unsigned ov_tex, ov_fbo; static int ov_rows, ov_dirty = 1, ov_failed;
+static unsigned ov_tex, ov_prog; static int ov_lines_used, ov_dirty = 1, ov_failed, ov_fps_chars;
+static void ov_px(int x, int y, unsigned rgb, int a) { if (x < 0 || y < 0 || x >= OVW || y >= OVH) return; unsigned char *p = ov_buf + (y * OVW + x) * 4; p[0] = rgb >> 16; p[1] = rgb >> 8; p[2] = rgb; p[3] = a; }
 static void ov_text(int line, const char *s, unsigned rgb) {
     int y0 = line * 6;
-    for (int i = 0; s[i] && i < 31; i++) {
-        const unsigned char *g = glyph(s[i]);
-        for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) {
-            unsigned char *p = ov_buf + ((y0 + r) * OVW + i * 4 + c) * 4; p[0] = rgb >> 16; p[1] = rgb >> 8; p[2] = rgb; p[3] = 255; }
-    }
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; s[i] && i < 47; i++) {
+            const unsigned char *g = glyph(s[i]);
+            for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) {
+                if (pass == 0) ov_px(i * 4 + c + 1, y0 + r + 1, 0, 255); else ov_px(i * 4 + c, y0 + r, rgb, 255); }
+        }
 }
 static void ov_build(int mode) {
-    for (int i = 0; i < OVW * OVH; i++) { ov_buf[i * 4] = ov_buf[i * 4 + 1] = ov_buf[i * 4 + 2] = 0; ov_buf[i * 4 + 3] = 255; }
-    char t[48]; snprintf(t, sizeof t, "FPS %d", fps_value); ov_text(0, t, 0xFFFF00);
-    ov_rows = 1;
-    if (mode >= 2 && &host_ov_lines[0][0]) { for (int i = 0; i < 4; i++) { ov_text(1 + i, host_ov_lines[i], i == 0 ? 0x80FF80 : i == 1 ? 0x80C0FF : 0xFFFFFF); } ov_rows = 5; }
+    memset(ov_buf, 0, sizeof ov_buf);
+    char t[48]; snprintf(t, sizeof t, "FPS %d", fps_value);
+    ov_text(0, t, fps_value >= 50 ? 0x60FF60 : fps_value >= 30 ? 0xFFE040 : 0xFF5050);
+    ov_fps_chars = (int)strlen(t); ov_lines_used = 0;
+    if (mode >= 2 && &host_ov_lines[0][0]) {
+        int n = 1; char l[64];
+        snprintf(l, sizeof l, "FRAME %.1f MS WORST %.0f", ov_frame_avg, ov_frame_worst); ov_text(n++, l, 0xFFFFFF);
+        snprintf(l, sizeof l, "LOGIC %.1f MS CPU %.1f", ov_logic_ms, ov_logic_cpu); ov_text(n++, l, 0xFFFFFF);
+        snprintf(l, sizeof l, "SWAP WAIT %.1f MS", ov_swap_ms); ov_text(n++, l, 0xFFFFFF);
+        for (int i = 0; i < 8 && n < 16; i++) if (host_ov_lines[i][0]) { unsigned c = i < 2 ? 0x80FF80 : i < 4 ? 0x80C0FF : i < 6 ? 0xFFD080 : 0xD0D0D0; ov_text(n++, host_ov_lines[i], c); }
+        snprintf(l, sizeof l, "SHADERS CACHED %d NEW %d", ov_shc_hits, ov_shc_miss); ov_text(n++, l, 0xD0D0D0);
+        ov_lines_used = n - 1;
+    }
     ov_dirty = 1;
 }
 static void draw_overlay(void) {
-    static void (*gi)(unsigned, int *), (*en)(unsigned), (*dis)(unsigned), (*sc)(int, int, int, int), (*cc)(float, float, float, float), (*cl)(unsigned), (*gf)(unsigned, float *), (*cm)(unsigned char, unsigned char, unsigned char, unsigned char), (*gb)(unsigned, unsigned char *);
+    static void (*gi)(unsigned, int *), (*en)(unsigned), (*dis)(unsigned), (*cm)(unsigned char, unsigned char, unsigned char, unsigned char), (*actv)(unsigned);
     static unsigned char (*ise)(unsigned);
-    static void (*gen_t)(int, unsigned *), (*bind_t)(unsigned, unsigned), (*teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texsub)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texpar)(unsigned, unsigned, int), (*actv)(unsigned);
-    static void (*gen_f)(int, unsigned *), (*bind_f)(unsigned, unsigned), (*fbtex)(unsigned, unsigned, unsigned, unsigned, int), (*blit)(int, int, int, int, int, int, int, int, unsigned, unsigned);
-    static unsigned t0, frames; static int last_mode = -1;
+    static void (*gen_t)(int, unsigned *), (*bind_t)(unsigned, unsigned), (*teximg)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texsub)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *), (*texpar)(unsigned, unsigned, int);
+    static unsigned (*mk_sh)(unsigned), (*mk_pr)(void); static void (*sh_src)(unsigned, int, const char *const *, const int *), (*sh_comp)(unsigned), (*pr_att)(unsigned, unsigned), (*pr_bind)(unsigned, unsigned, const char *), (*pr_link)(unsigned), (*use)(unsigned), (*u1i)(int, int);
+    static int (*uloc)(unsigned, const char *);
+    static void (*en_a)(unsigned), (*dis_a)(unsigned), (*vap)(unsigned, int, unsigned, unsigned char, int, const void *), (*draw)(unsigned, int, int), (*bfs)(unsigned, unsigned, unsigned, unsigned), (*bindb)(unsigned, unsigned), (*vp)(int, int, int, int), (*gvai)(unsigned, unsigned, int *), (*gvap)(unsigned, unsigned, void **);
+    static unsigned t0, frames; static int last_mode = -1; static struct timespec last_ts; static double fsum, fworst; static int fcount;
     frames++; unsigned now = SDL_GetTicks();
+    { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); if (last_ts.tv_sec) { double dt = (ts.tv_sec - last_ts.tv_sec) * 1e3 + (ts.tv_nsec - last_ts.tv_nsec) / 1e6; fsum += dt; fcount++; if (dt > fworst) fworst = dt; } last_ts = ts; }
     int mode = (&host_ov_mode) ? host_ov_mode : 1;
-    int cur = (&host_cursor[0] && host_cursor[2]);
-    if (now - t0 >= 500) { fps_value = (int)(frames * 1000.0f / (now - t0) + 0.5f); frames = 0; t0 = now; if (mode) ov_build(mode); }
+    if (now - t0 >= 500) { fps_value = (int)(frames * 1000.0f / (now - t0) + 0.5f); frames = 0; t0 = now;
+        if (fcount) { ov_frame_avg = fsum / fcount; ov_frame_worst = fworst; } fsum = fworst = 0; fcount = 0; if (mode) ov_build(mode); }
     if (mode != last_mode) { last_mode = mode; if (mode) ov_build(mode); }
-    if (!mode && !cur) return;
-    if (!gi) { gi = SDL_GL_GetProcAddress("glGetIntegerv"); en = SDL_GL_GetProcAddress("glEnable"); dis = SDL_GL_GetProcAddress("glDisable"); sc = SDL_GL_GetProcAddress("glScissor");
-        cc = SDL_GL_GetProcAddress("glClearColor"); cl = SDL_GL_GetProcAddress("glClear"); gf = SDL_GL_GetProcAddress("glGetFloatv"); cm = SDL_GL_GetProcAddress("glColorMask");
-        gb = SDL_GL_GetProcAddress("glGetBooleanv"); ise = SDL_GL_GetProcAddress("glIsEnabled");
+    if (!mode || ov_failed) return;
+    if (!gi) { gi = SDL_GL_GetProcAddress("glGetIntegerv"); en = SDL_GL_GetProcAddress("glEnable"); dis = SDL_GL_GetProcAddress("glDisable"); cm = SDL_GL_GetProcAddress("glColorMask"); ise = SDL_GL_GetProcAddress("glIsEnabled");
         gen_t = SDL_GL_GetProcAddress("glGenTextures"); bind_t = SDL_GL_GetProcAddress("glBindTexture"); teximg = SDL_GL_GetProcAddress("glTexImage2D"); texsub = SDL_GL_GetProcAddress("glTexSubImage2D");
         texpar = SDL_GL_GetProcAddress("glTexParameteri"); actv = SDL_GL_GetProcAddress("glActiveTexture");
-        gen_f = SDL_GL_GetProcAddress("glGenFramebuffers"); bind_f = SDL_GL_GetProcAddress("glBindFramebuffer"); fbtex = SDL_GL_GetProcAddress("glFramebufferTexture2D"); blit = SDL_GL_GetProcAddress("glBlitFramebuffer"); }
-    if (!gi || !sc || !cc || !cl || !cm || !gb || !ise) return;
-    int box[4]; float col[4]; unsigned char mask[4]; int fb = 0;
-    gi(0x8CA6, &fb); if (fb) return;
-    gi(0x0C10, box); gf(0x0C22, col); gb(0x0C23, mask); unsigned char was = ise(0x0C11);
+        mk_sh = SDL_GL_GetProcAddress("glCreateShader"); mk_pr = SDL_GL_GetProcAddress("glCreateProgram"); sh_src = SDL_GL_GetProcAddress("glShaderSource"); sh_comp = SDL_GL_GetProcAddress("glCompileShader");
+        pr_att = SDL_GL_GetProcAddress("glAttachShader"); pr_bind = SDL_GL_GetProcAddress("glBindAttribLocation"); pr_link = SDL_GL_GetProcAddress("glLinkProgram"); use = SDL_GL_GetProcAddress("glUseProgram");
+        uloc = SDL_GL_GetProcAddress("glGetUniformLocation"); u1i = SDL_GL_GetProcAddress("glUniform1i"); en_a = SDL_GL_GetProcAddress("glEnableVertexAttribArray"); dis_a = SDL_GL_GetProcAddress("glDisableVertexAttribArray");
+        vap = SDL_GL_GetProcAddress("glVertexAttribPointer"); draw = SDL_GL_GetProcAddress("glDrawArrays"); bfs = SDL_GL_GetProcAddress("glBlendFuncSeparate"); bindb = SDL_GL_GetProcAddress("glBindBuffer");
+        vp = SDL_GL_GetProcAddress("glViewport"); gvai = SDL_GL_GetProcAddress("glGetVertexAttribiv"); gvap = SDL_GL_GetProcAddress("glGetVertexAttribPointerv");
+ }
+    if (!gi || !en || !dis || !cm || !ise || !gen_t || !bind_t || !teximg || !texsub || !texpar || !actv || !mk_sh || !mk_pr || !sh_src || !sh_comp || !pr_att || !pr_bind || !pr_link || !use || !uloc || !u1i || !en_a || !dis_a || !vap || !draw || !bfs || !bindb || !vp || !gvai || !gvap) { ov_failed = 1; return; }
+    int fb = 0; gi(0x8CA6, &fb); if (fb) return;           /* only draw into the window framebuffer */
+    if (!ov_prog) {
+        static const char *vs = "attribute vec2 p; attribute vec2 t; varying vec2 v; void main() { gl_Position = vec4(p, 0.0, 1.0); v = t; }";
+        static const char *fs = "precision mediump float; uniform sampler2D s; varying vec2 v; void main() { gl_FragColor = texture2D(s, v); }";
+        unsigned v = mk_sh(0x8B31), f = mk_sh(0x8B30); sh_src(v, 1, &vs, NULL); sh_comp(v); sh_src(f, 1, &fs, NULL); sh_comp(f);
+        unsigned pr = mk_pr(); pr_att(pr, v); pr_att(pr, f); pr_bind(pr, 0, "p"); pr_bind(pr, 1, "t"); pr_link(pr);
+        int ok = 0; ld(); r_glGetProgramiv(pr, 0x8B82, &ok);
+        if (!ok) { fprintf(stderr, "[overlay] shader link failed, overlay disabled\n"); ov_failed = 1; return; }
+        ov_prog = pr; }
+    /* ---- save state we touch ---- */
+    int prog = 0, abuf = 0, unit = 0, tex = 0, vpv[4], bsr = 0, bdr = 0, bsa = 0, bda = 0, sc_was = ise(0x0C11), bl_was = ise(0x0BE2), dt_was = ise(0x0B71), cf_was = ise(0x0B44), st_was = ise(0x0B90);
+    unsigned char mask[4]; { static void (*gb)(unsigned, unsigned char *); if (!gb) gb = SDL_GL_GetProcAddress("glGetBooleanv"); if (!gb) return; gb(0x0C23, mask); }
+    gi(0x8B8D, &prog); gi(0x8894, &abuf); gi(0x84E0, &unit); gi(0x0BA2, vpv); gi(0x80C9, &bsr); gi(0x80C8, &bdr); gi(0x80CB, &bsa); gi(0x80CA, &bda);
+    struct { int en, size, type, norm, stride, buf; void *ptr; } at[2];
+    for (int i = 0; i < 2; i++) { gvai(i, 0x8622, &at[i].en); gvai(i, 0x8623, &at[i].size); gvai(i, 0x8625, &at[i].type); gvai(i, 0x886A, &at[i].norm); gvai(i, 0x8624, &at[i].stride); gvai(i, 0x889F, &at[i].buf); gvap(i, 0x8645, &at[i].ptr); }
+    actv(0x84C0); gi(0x8069, &tex);
+    if (ov_dirty || !ov_tex) {
+        if (!ov_tex) { gen_t(1, &ov_tex); bind_t(0x0DE1, ov_tex); texpar(0x0DE1, 0x2801, 0x2600); texpar(0x0DE1, 0x2800, 0x2600); texpar(0x0DE1, 0x2802, 0x812F); texpar(0x0DE1, 0x2803, 0x812F);
+            teximg(0x0DE1, 0, 0x1908, OVW, OVH, 0, 0x1908, 0x1401, ov_buf); }
+        else { bind_t(0x0DE1, ov_tex); texsub(0x0DE1, 0, 0, 0, OVW, OVH, 0x1908, 0x1401, ov_buf); }
+        ov_dirty = 0;
+    } else bind_t(0x0DE1, ov_tex);
     int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
-    cm(1, 1, 1, 1);
-    if (mode) {
-        int ok = blit && gen_t && bind_t && teximg && texsub && texpar && actv && gen_f && bind_f && fbtex && !ov_failed;
-        if (ok) {
-            int prev_unit = 0, prev_tex = 0, rfb = 0; gi(0x84E0, &prev_unit); gi(0x8CAA, &rfb);
-            if (ov_dirty || !ov_tex) {
-                actv(0x84C0); gi(0x8069, &prev_tex);
-                if (!ov_tex) { gen_t(1, &ov_tex); bind_t(0x0DE1, ov_tex); texpar(0x0DE1, 0x2801, 0x2600); texpar(0x0DE1, 0x2800, 0x2600);
-                    texpar(0x0DE1, 0x2802, 0x812F); texpar(0x0DE1, 0x2803, 0x812F); teximg(0x0DE1, 0, 0x1908, OVW, OVH, 0, 0x1908, 0x1401, ov_buf);
-                    gen_f(1, &ov_fbo); bind_f(0x8D40, ov_fbo); fbtex(0x8D40, 0x8CE0, 0x0DE1, ov_tex, 0); bind_f(0x8D40, 0); }
-                else { bind_t(0x0DE1, ov_tex); texsub(0x0DE1, 0, 0, 0, OVW, OVH, 0x1908, 0x1401, ov_buf); }
-                bind_t(0x0DE1, prev_tex); actv(prev_unit); ov_dirty = 0;
-            }
-            if (was) dis(0x0C11);
-            const int S = 2; int w = OVW, h = ov_rows * 6;
-            { static int w_used; if (!w_used) { w_used = 1; } }
-            bind_f(0x8CA8, ov_fbo); bind_f(0x8CA9, 0);
-            blit(0, 0, 31 * 4, h, 4, H - 4, 4 + 31 * 4 * S, H - 4 - h * S, 0x4000, 0x2600); (void)w;
-            bind_f(0x8CA8, rfb); bind_f(0x8CA9, fb);
-            if (was) en(0x0C11);
-        } else { /* fallback: FPS digits only via scissored clears */
-            en(0x0C11);
-            char txt[8]; int n = snprintf(txt, sizeof txt, "%d", fps_value); const int S = 3, X0 = 4, Y0 = H - 4 - 5 * S;
-            sc(X0 - 2, Y0 - 2, n * 4 * S + 3, 5 * S + 4); cc(0, 0, 0, 1); cl(0x4000); cc(1, 1, 0, 1);
-            for (int i = 0; i < n; i++) { const unsigned char *g = glyph(txt[i]);
-                for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) { sc(X0 + (i * 4 + c) * S, Y0 + (4 - r) * S, S, S); cl(0x4000); } }
-            sc(box[0], box[1], box[2], box[3]); cc(col[0], col[1], col[2], col[3]); if (!was) dis(0x0C11);
-        }
-    }
-    if (cur) { en(0x0C11); int x = host_cursor[0], y = H - host_cursor[1];
-        sc(x - 7, y - 7, 15, 15); cc(0, 0, 0, 1); cl(0x4000); sc(x - 5, y - 5, 11, 11); cc(1, 1, 1, 1); cl(0x4000); }
-    sc(box[0], box[1], box[2], box[3]); cc(col[0], col[1], col[2], col[3]); cm(mask[0], mask[1], mask[2], mask[3]);
-    if (was) en(0x0C11); else dis(0x0C11);
+    vp(0, 0, W, H); if (sc_was) dis(0x0C11); if (dt_was) dis(0x0B71); if (cf_was) dis(0x0B44); if (st_was) dis(0x0B90); en(0x0BE2); cm(1, 1, 1, 1);
+    bfs(0x0302, 0x0303, 1, 0x0303);
+    use(ov_prog); u1i(uloc(ov_prog, "s"), 0); bindb(0x8892, 0); en_a(0); en_a(1);
+    #define QUAD(px, py, pw, ph, u0, v0, u1, v1) do { float x0 = 2.0f * (px) / W - 1, x1 = 2.0f * ((px) + (pw)) / W - 1, y0 = 1 - 2.0f * (py) / H, y1 = 1 - 2.0f * ((py) + (ph)) / H; \
+        float q[16] = { x0, y0, u0, v0,  x1, y0, u1, v0,  x0, y1, u0, v1,  x1, y1, u1, v1 }; vap(0, 2, 0x1406, 0, 16, q); vap(1, 2, 0x1406, 0, 16, q + 2); draw(0x0005, 0, 4); } while (0)
+    { const int BS = 6; int cw = ov_fps_chars * 4 + 1; QUAD(8, 6, cw * BS, 7 * BS, 0.0f, 0.0f, (float)cw / OVW, 7.0f / OVH); }
+    if (ov_lines_used > 0) { const int S = 2; int rows = ov_lines_used * 6 + 1; QUAD(8, 6 + 7 * 6 + 6, OVW * S, rows * S, 0.0f, 6.0f / OVH, 1.0f, (6.0f + rows) / OVH); }
+    /* ---- restore ---- */
+    use(prog);
+    for (int i = 0; i < 2; i++) { bindb(0x8892, at[i].buf); vap(i, at[i].size, at[i].type, (unsigned char)at[i].norm, at[i].stride, at[i].ptr); if (at[i].en) en_a(i); else dis_a(i); }
+    bindb(0x8892, abuf);
+    bfs(bsr, bdr, bsa, bda);
+    bind_t(0x0DE1, tex); actv(unit);
+    vp(vpv[0], vpv[1], vpv[2], vpv[3]); cm(mask[0], mask[1], mask[2], mask[3]);
+    if (!bl_was) dis(0x0BE2); if (dt_was) en(0x0B71); if (cf_was) en(0x0B44); if (st_was) en(0x0B90); if (sc_was) en(0x0C11);
 }
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
@@ -166,6 +187,11 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
         SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
         s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
+        { static double a_g, a_c, a_s; static int a_n; static struct timespec a_t; double gw = 0, gc = 0;
+          if (init) { gw = (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; gc = (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
+          a_g += gw; a_c += gc; a_s += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; a_n++;
+          if (!a_t.tv_sec) a_t = w1;
+          if ((w1.tv_sec - a_t.tv_sec) * 1000 + (w1.tv_nsec - a_t.tv_nsec) / 1000000 >= 500 && a_n) { ov_logic_ms = a_g / a_n; ov_logic_cpu = a_c / a_n; ov_swap_ms = a_s / a_n; a_g = a_c = a_s = 0; a_n = 0; a_t = w1; } }
         w_end = w1; c_end = c1; init = 1; frames++;
         if (!rep.tv_sec) rep = w1;
         if (w1.tv_sec - rep.tv_sec >= 5) {
@@ -341,10 +367,11 @@ SOFT static void w_glLinkProgram(unsigned pr) {
         snprintf(path, sizeof path, "%s/%016llx.bin", dir, h);
         cached = pc_try_load(pr, path);
         if (cached) hits++;
+        ov_shc_hits = hits;
     }
     if (!cached) { if (r_glProgramParameteri) r_glProgramParameteri(pr, 0x8257, 1); r_glLinkProgram(pr); }
     int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
-    if (!cached && ok && path[0]) { misses++; pc_save(pr, path); }
+    if (!cached && ok && path[0]) { misses++; ov_shc_miss = misses; pc_save(pr, path); }
     if (pr < PC_N) { pc_natt[pr] = 0; pc_phash[pr] = 0; }
     clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5 || nl % 50 == 0) fprintf(stderr, "[slow] link program %u %.1f ms %s (total %d programs %.0f ms; cache hits %d misses %d)\n", pr, ms, cached ? "(cached)" : "", nl, tot, hits, misses); }
     if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
