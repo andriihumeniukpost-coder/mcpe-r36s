@@ -51,14 +51,22 @@ void host_lockwatch(const char *what, void *word, void *ra) {
     const char *rw = elf_where((uintptr_t)ra, &roff);
     fprintf(stderr, "[lock] tid=%d %s word=%s+0x%lx from %s+0x%lx\n", (int)syscall(SYS_gettid), what, w, (unsigned long)off, rw ? rw : "?", (unsigned long)roff);
 }
+#include <unwind.h>
+struct bt_ctx { int n; };
+static _Unwind_Reason_Code bt_cb(struct _Unwind_Context *uc, void *arg) {
+    struct bt_ctx *c = arg; uintptr_t pc = _Unwind_GetIP(uc), off; const char *w = elf_where(pc, &off); Dl_info di;
+    if (w) fprintf(stderr, "[bt] #%d %s+0x%lx\n", c->n, w, (unsigned long)off);
+    else if (dladdr((void *)pc, &di)) fprintf(stderr, "[bt] #%d %s:%s+0x%lx\n", c->n, di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "?", (unsigned long)(pc - (uintptr_t)(di.dli_sname ? di.dli_saddr : di.dli_fbase)));
+    else fprintf(stderr, "[bt] #%d %p\n", c->n, (void *)pc);
+    return ++c->n > 40 ? _URC_END_OF_STACK : _URC_NO_REASON;
+}
 /* called from the bionic-compat shim (raise/abort/kill...) to show who asked for it */
 void host_report(const char *what, void *ra) {
-    uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off);
+    uintptr_t off; const char *w = elf_where((uintptr_t)ra, &off); if (!w) off = 0;
     fprintf(stderr, "[trace] tid=%d %s called from %s+0x%lx (ra=%p)\n", (int)syscall(SYS_gettid), what, w ? w : "?", (unsigned long)off, ra);
     volatile uintptr_t here = 0;
-    { void *bt[40]; int n = backtrace(bt, 40);
-      for (int i = 0; i < n; i++) { uintptr_t o; const char *w = elf_where((uintptr_t)bt[i], &o);
-          fprintf(stderr, "[bt] #%d %p %s+0x%lx\n", i, bt[i], w ? w : "?", (unsigned long)o); } }
+    { Dl_info di; if (dladdr(ra, &di)) fprintf(stderr, "[trace]   ra in %s (%s) +0x%lx\n", di.dli_fname ? di.dli_fname : "?", di.dli_sname ? di.dli_sname : "?", (unsigned long)((uintptr_t)ra - (uintptr_t)(di.dli_sname ? di.dli_saddr : di.dli_fbase))); }
+    { struct bt_ctx c = { 0 }; _Unwind_Backtrace(bt_cb, &c); fprintf(stderr, "[bt] %d frames\n", c.n); }
     scan_stack((uintptr_t *)&here, 300);
     fflush(stderr);
 }
