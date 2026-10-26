@@ -395,6 +395,13 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] JNI_OnLoad done\n");
 
     { pthread_t wt; pthread_create(&wt, NULL, watchdog, NULL); pthread_detach(wt); }
+    /* MainActivity.onCreate calls nativeRegisterThis(): it stores the activity and releases the mutex that
+     * JNI_OnLoad leaves locked; the game thread (android_main) blocks on that mutex until then. */
+    {
+        void (*reg)(JNIEnv *, jobject) = elf_sym(game, "Java_com_mojang_minecraftpe_MainActivity_nativeRegisterThis");
+        fprintf(stderr, "[host] nativeRegisterThis=%p\n", (void *)reg);
+        if (reg) reg(fake_env(), fake_activity_obj());
+    }
     static ANativeActivity act;
     act.callbacks = calloc(1, sizeof *act.callbacks);
     act.vm = fake_vm(); act.env = fake_env(); act.clazz = fake_activity_obj();
