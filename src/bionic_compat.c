@@ -60,7 +60,16 @@ EXPORT uintptr_t __stack_chk_guard = 0x5ca1ab1e;
 EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected\n"); _exit(134); }
 EXPORT void __google_potentially_blocking_region_begin(void) {}
 EXPORT void __google_potentially_blocking_region_end(void) {}
-EXPORT void (*bsd_signal(int sig, void (*h)(int)))(int) { return signal(sig, h); }
+static void (*do_signal(int sig, void (*h)(int)))(int) {
+    if (sig == SIGSEGV || sig == SIGBUS) {
+        fprintf(stderr, "[compat] game signal(%d) ignored (host handler kept)\n", sig);
+        return SIG_DFL;
+    }
+    void (*(*r)(int, void (*)(int)))(int) = R("signal");
+    return r(sig, h);
+}
+EXPORT void (*bsd_signal(int sig, void (*h)(int)))(int) { return do_signal(sig, h); }
+EXPORT void (*signal(int sig, void (*h)(int)))(int) { return do_signal(sig, h); }
 
 /* Bionic FILE is 84 bytes; stdin/stdout/stderr are &__sF[0..2]. */
 #define BFILE_SZ 84
