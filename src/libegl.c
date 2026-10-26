@@ -150,6 +150,7 @@ static void draw_overlay(void) {
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
+    if (n == 0) { int d = 0, st = 0; SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &d); SDL_GL_GetAttribute(SDL_GL_STENCIL_SIZE, &st); fprintf(stderr, "[gl] depth bits %d stencil bits %d\n", d, st); }
     if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
     if (n == 200 || n == 1500) probe_pixels();
@@ -290,6 +291,7 @@ SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, co
 static void (*r_glUseProgram)(unsigned);
 static int (*r_glGetUniformLocation)(unsigned, const char *);
 static void (*r_glUniform4fv)(int, int, const float *);
+static void (*r_glUniform1fv)(int, int, const float *);
 static void (*r_glUniform3fv)(int, int, const float *);
 static void (*r_glUniform2fv)(int, int, const float *);
 static int ft_fc[PC_N], ft_fk[PC_N];
@@ -301,9 +303,10 @@ SOFT static int w_glGetUniformLocation(unsigned p, const char *n) {
     return l;
 }
 static void ft_log(const char *what, const float *v, int n) {
-    static int c; c++; if (c < 40 || c % 600 == 0) { fprintf(stderr, "[fog] prog %u %s =", ft_cur, what); for (int i = 0; i < n; i++) fprintf(stderr, " %.3f", v[i]); fprintf(stderr, "\n"); }
+    static int c, rdc; if (what[0] == 'R') { if (++rdc > 30 && rdc % 300) return; } c++; if (what[0] == 'R' || c < 40 || c % 600 == 0) { fprintf(stderr, "[fog] prog %u %s =", ft_cur, what); for (int i = 0; i < n; i++) fprintf(stderr, " %.3f", v[i]); fprintf(stderr, "\n"); }
 }
 SOFT static void w_glUniform4fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fc[ft_cur]) ft_log("FOG_COLOR", v, 4); r_glUniform4fv(l, c, v); }
+SOFT static void w_glUniform1fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_rd[ft_cur]) ft_log("RENDER_DISTANCE", v, 1); r_glUniform1fv(l, c, v); }
 SOFT static void w_glUniform3fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fc[ft_cur]) ft_log("FOG_COLOR3", v, 3); r_glUniform3fv(l, c, v); }
 SOFT static void w_glUniform2fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fk[ft_cur]) ft_log("FOG_CONTROL", v, 2); r_glUniform2fv(l, c, v); }
 static int pc_try_load(unsigned pr, const char *path) {
@@ -533,7 +536,7 @@ static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform1fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
