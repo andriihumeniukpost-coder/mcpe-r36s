@@ -51,7 +51,9 @@ EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle
 }
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
-    if (n < 3 || n % 120 == 0) fprintf(stderr, "[egl] swap #%d\n", n);
+    ld();
+    if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
+    if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
     n++;
     SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
 }
@@ -102,12 +104,52 @@ SOFT static void w_glVertexAttrib2f(unsigned i, float a, float b) { r_glVertexAt
 SOFT static void w_glVertexAttrib3f(unsigned i, float a, float b, float c) { r_glVertexAttrib3f(i, a, b, c); }
 SOFT static void w_glVertexAttrib4f(unsigned i, float a, float b, float c, float d) { r_glVertexAttrib4f(i, a, b, c, d); }
 
+
+/* ---- diagnostics: shader compile/link logs, texture uploads, GL errors ---- */
+#define GL_COMPILE_STATUS 0x8B81
+#define GL_LINK_STATUS 0x8B82
+#define GL_INFO_LOG_LENGTH 0x8B84
+static void (*r_glCompileShader)(unsigned);
+static void (*r_glLinkProgram)(unsigned);
+static void (*r_glGetShaderiv)(unsigned, unsigned, int *);
+static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
+static void (*r_glGetShaderInfoLog)(unsigned, int, int *, char *);
+static void (*r_glGetProgramInfoLog)(unsigned, int, int *, char *);
+static void (*r_glTexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
+static void (*r_glShaderSource)(unsigned, int, const char *const *, const int *);
+static unsigned (*r_glGetError)(void);
+static const unsigned char *(*r_glGetString)(unsigned);
+static void ld(void) {
+    if (r_glGetError) return;
+#define L(n) r_##n = SDL_GL_GetProcAddress(#n)
+    L(glGetShaderiv); L(glGetProgramiv); L(glGetShaderInfoLog); L(glGetProgramInfoLog); L(glGetError); L(glGetString);
+}
+SOFT static void w_glCompileShader(unsigned sh) {
+    ld(); r_glCompileShader(sh);
+    int ok = 0; r_glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    if (!ok) { char b[1024] = ""; r_glGetShaderInfoLog(sh, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] SHADER %u COMPILE FAILED: %s\n", sh, b); }
+}
+SOFT static void w_glLinkProgram(unsigned pr) {
+    ld(); r_glLinkProgram(pr);
+    int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
+    if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
+}
+SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, const int *len) {
+    static int c; if (c < 3 && n > 0) { c++; fprintf(stderr, "[gl] shader %u source (%d parts): %.600s\n", sh, n, src[0]); }
+    r_glShaderSource(sh, n, src, len);
+}
+SOFT static void w_glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void *p) {
+    static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glTexImage2D tgt=%x lvl=%d ifmt=%x %dx%d fmt=%x type=%x data=%s\n", t, l, i, w, h, f, ty, p ? "yes" : "null"); }
+    r_glTexImage2D(t, l, i, w, h, b, f, ty, p);
+}
+
 #define MAP(n) { #n, (void **)&r_##n, (void *)w_##n }
 static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glUniform1f), MAP(glUniform2f), MAP(glUniform3f), MAP(glUniform4f),
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
+    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
