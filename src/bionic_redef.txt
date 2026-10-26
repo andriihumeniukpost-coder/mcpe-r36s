@@ -61,3 +61,6 @@ bc_flock flock
 bc_ftruncate ftruncate
 bc_fsync fsync
 bc_access access
+bc_fclose fclose
+bc_fdatasync fdatasync
+bc_fileno fileno

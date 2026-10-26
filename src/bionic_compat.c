@@ -99,9 +99,14 @@ EXPORT int bc_fgetc(FILE *f) { int (*r)(FILE *) = R("fgetc"); return r(mapf(f));
 EXPORT int bc_getc(FILE *f) { int (*r)(FILE *) = R("fgetc"); return r(mapf(f)); }
 EXPORT int bc_ungetc(int c, FILE *f) { int (*r)(int, FILE *) = R("ungetc"); return r(c, mapf(f)); }
 EXPORT char *bc_fgets(char *s, int n, FILE *f) { char *(*r)(char *, int, FILE *) = R("fgets"); return r(s, n, mapf(f)); }
-EXPORT size_t bc_fwrite(const void *p, size_t s, size_t n, FILE *f) { size_t (*r)(const void *, size_t, size_t, FILE *) = R("fwrite"); return r(p, s, n, mapf(f)); }
+static int wlog;
+EXPORT size_t bc_fwrite(const void *p, size_t s, size_t n, FILE *f) { size_t (*r)(const void *, size_t, size_t, FILE *) = R("fwrite"); FILE *g = mapf(f);
+    size_t x = r(p, s, n, g); int e = errno; if (g != stdout && g != stderr && wlog < 60) { wlog++; fprintf(stderr, "[io] fwrite(%p, %zu*%zu) = %zu err=%d\n", (void *)g, s, n, x, x != n ? e : 0); } errno = e; return x; }
 EXPORT size_t bc_fread(void *p, size_t s, size_t n, FILE *f) { size_t (*r)(void *, size_t, size_t, FILE *) = R("fread"); return r(p, s, n, mapf(f)); }
-EXPORT int bc_fflush(FILE *f) { int (*r)(FILE *) = R("fflush"); return f ? r(mapf(f)) : r(NULL); }
+EXPORT int bc_fflush(FILE *f) { int (*r)(FILE *) = R("fflush"); int x = f ? r(mapf(f)) : r(NULL); int e = errno; if (x && wlog < 120) { wlog++; fprintf(stderr, "[io] fflush(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
+EXPORT int bc_fclose(FILE *f) { int (*r)(FILE *) = R("fclose"); int x = r(mapf(f)); int e = errno; if (wlog < 120) { wlog++; fprintf(stderr, "[io] fclose(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
+EXPORT int bc_fdatasync(int fd) { int (*r)(int) = R("fdatasync"); int x = r(fd); int e = errno; if (wlog < 120) { wlog++; fprintf(stderr, "[io] fdatasync(%d) = %d errno=%d\n", fd, x, e); } errno = e; return x; }
+EXPORT int bc_fileno(FILE *f) { int (*r)(FILE *) = R("fileno"); int x = r(mapf(f)); if (wlog < 120) { wlog++; fprintf(stderr, "[io] fileno(%p) = %d\n", (void *)f, x); } return x; }
 EXPORT int bc_setvbuf(FILE *f, char *b, int m, size_t s) { int (*r)(FILE *, char *, int, size_t) = R("setvbuf"); return r(mapf(f), b, m, s); }
 EXPORT int bc_feof(FILE *f) { int (*r)(FILE *) = R("feof"); return r(mapf(f)); }
 EXPORT int bc_fscanf(FILE *f, const char *fmt, ...) {
@@ -416,7 +421,7 @@ EXPORT int bc_mkdir(const char *p, unsigned m) {
 }
 EXPORT int bc_rename(const char *a, const char *b) {
     int (*r)(const char *, const char *) = R("rename"); int x = r(a, b), e = errno;
-    if (x < 0) { errno = e; IOFAIL("rename(%s, %s)", a, b); } errno = e; return x;
+    if (x < 0) { errno = e; IOFAIL("rename(%s, %s)", a, b); } else if (iointerest(a) && iolog < 150) { iolog++; fprintf(stderr, "[io] rename(%s, %s) = 0\n", a, b); } errno = e; return x;
 }
 EXPORT int bc_unlink(const char *p) {
     int (*r)(const char *) = R("unlink"); int x = r(p), e = errno;
