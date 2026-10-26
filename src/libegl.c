@@ -52,11 +52,13 @@ EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle
 static unsigned (*r_glGetError)(void);
 static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void);
+static void probe_pixels(void);
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
     if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
+    if (n == 200 || n == 600) probe_pixels();
     n++;
     SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
 }
@@ -165,13 +167,45 @@ SOFT static void w_glCompressedTexImage2D(unsigned t, int l, unsigned f, int w, 
     r_glCompressedTexImage2D(t, l, f, w, h, b, sz, p);
 }
 
+static void (*r_glTexStorage2D)(unsigned, int, unsigned, int, int);
+static void (*r_glUniform1i)(int, int);
+static void (*r_glActiveTexture)(unsigned);
+static void (*r_glGenerateMipmap)(unsigned);
+static void (*r_glReadPixels)(int, int, int, int, unsigned, unsigned, void *);
+SOFT static void w_glTexStorage2D(unsigned t, int lv, unsigned f, int w, int h) {
+    static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glTexStorage2D tgt=%x levels=%d ifmt=%x %dx%d\n", t, lv, f, w, h); }
+    r_glTexStorage2D(t, lv, f, w, h);
+}
+SOFT static void w_glUniform1i(int l, int v) {
+    static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glUniform1i loc=%d val=%d\n", l, v); }
+    r_glUniform1i(l, v);
+}
+SOFT static void w_glActiveTexture(unsigned u) {
+    static int c; if (c < 20) { c++; fprintf(stderr, "[gl] glActiveTexture %x\n", u); }
+    r_glActiveTexture(u);
+}
+SOFT static void w_glGenerateMipmap(unsigned t) {
+    static int c; if (c < 20) { c++; fprintf(stderr, "[gl] glGenerateMipmap %x\n", t); }
+    r_glGenerateMipmap(t);
+}
+static void probe_pixels(void) {
+    if (!r_glReadPixels) r_glReadPixels = SDL_GL_GetProcAddress("glReadPixels");
+    if (!r_glReadPixels) return;
+    static const int pts[][2] = { {10, 10}, {320, 240}, {320, 400}, {100, 300}, {500, 100} };
+    for (int i = 0; i < 5; i++) {
+        unsigned char px[4] = {0};
+        r_glReadPixels(pts[i][0], pts[i][1], 1, 1, 0x1908, 0x1401, px);
+        fprintf(stderr, "[gl] px(%d,%d) = %02x %02x %02x %02x\n", pts[i][0], pts[i][1], px[0], px[1], px[2], px[3]);
+    }
+}
+
 #define MAP(n) { #n, (void **)&r_##n, (void *)w_##n }
 static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glUniform1f), MAP(glUniform2f), MAP(glUniform3f), MAP(glUniform4f),
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
