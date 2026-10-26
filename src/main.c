@@ -223,6 +223,7 @@ static AInputQueue *queue;
 static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
 volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) */
+volatile int host_vsync_req = -1;              /* SELECT + d-pad up/down: vsync on/off (applied on the render thread) */
 volatile int host_hide_idx = -1;              /* draw bisect (SELECT + d-pad left/right) */
 volatile int host_ov_mode = 1;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
 char host_ov_lines[8][48];                    /* filled by stats_thread, drawn by libegl */
@@ -238,6 +239,7 @@ static int find_gpu_dir(char *out, size_t n) {
 }
 static void *stats_thread(void *arg) {
     (void)arg; char gpu[300] = ""; int have_gpu = find_gpu_dir(gpu, sizeof gpu);
+    if (have_gpu) { const char *f[] = {"available_frequencies", "min_freq", "max_freq", "governor", "available_governors"}; for (int i = 0; i < 5; i++) { char p[340], v[400]; snprintf(p, sizeof p, "%s/%s", gpu, f[i]); if (slurp(p, v, sizeof v)) { v[strcspn(v, "\n")] = 0; fprintf(stderr, "[gpu] %s = %s\n", f[i], v); } } }
     unsigned long long pt = 0, pi = 0; unsigned long long pp = 0, pw = 0; char b[4096];
     for (;;) {
         usleep(500000);
@@ -619,6 +621,7 @@ int main(int argc, char **argv) {
                         fprintf(stderr, "[pad] overlay mode %d\n", host_ov_mode); break;
                     }
                     { static int sel; if (b == SDL_CONTROLLER_BUTTON_BACK) sel = dn;
+                      if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN)) { host_vsync_req = b == SDL_CONTROLLER_BUTTON_DPAD_UP ? 1 : 0; fprintf(stderr, "[pad] vsync request %d\n", host_vsync_req); break; }
                       if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
                           host_hide_idx += b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ? 1 : -1; if (host_hide_idx < -1) host_hide_idx = -1;
                           fprintf(stderr, "[pad] hide index %d\n", host_hide_idx); break; } }

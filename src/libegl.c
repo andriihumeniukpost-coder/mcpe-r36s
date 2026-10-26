@@ -60,6 +60,8 @@ extern char host_ov_lines[8][48] __attribute__((weak));      /* stats lines from
 static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
 extern volatile int host_hide_idx __attribute__((weak));     /* draw-bisect: -1 off, else index into the programs drawn last frame */
 static char ov_hide_txt[48];
+extern volatile int host_vsync_req __attribute__((weak));   /* -1 none, 0/1 = set swap interval on the render thread */
+static int g_vsync = -1;
 static char *hb_src[4096];
 static void hb_frame_end(void);
 static int fps_value;
@@ -101,7 +103,7 @@ static void ov_build(int mode) {
     if (mode >= 2 && &host_ov_lines[0][0]) {
         int n = ov_hide_txt[0] ? 2 : 1; char l[64];
         snprintf(l, sizeof l, "FRAME %.1fMS WORST %.0f", ov_frame_avg, ov_frame_worst); ov_text(n++, l, 0xFFFFFF);
-        snprintf(l, sizeof l, "LOGIC %.1f SWAP %.1f", ov_logic_ms, ov_swap_ms); ov_text(n++, l, 0xFFFFFF);
+        snprintf(l, sizeof l, "LOGIC %.1f SWAP %.1f VSYNC %s", ov_logic_ms, ov_swap_ms, g_vsync > 0 ? "ON" : g_vsync == 0 ? "OFF" : "?"); ov_text(n++, l, 0xFFFFFF);
         for (int i = 0; i < 8 && n < 15; i++) if (host_ov_lines[i][0]) { unsigned c = i < 2 ? 0x80FF80 : i < 4 ? 0x80C0FF : i < 6 ? 0xFFD080 : 0xD0D0D0; ov_text(n++, host_ov_lines[i], c); }
         snprintf(l, sizeof l, "SHADERS %d NEW %d", ov_shc_hits, ov_shc_miss); ov_text(n++, l, 0xD0D0D0);
         ov_lines_used = n - 1;
@@ -189,6 +191,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
         if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
         { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_FINISH") != NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
           if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
+        if (&host_vsync_req && host_vsync_req >= 0) { int v = host_vsync_req; host_vsync_req = -1; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] vsync toggled -> %d (r=%d, now %d)\n", v, r, SDL_GL_GetSwapInterval()); }
         SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
         s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
@@ -206,7 +209,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     }
     return EGL_TRUE;
 }
-EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; const char *o = getenv("MCPE_SWAPINT"); int v = o ? atoi(o) : i; int r = SDL_GL_SetSwapInterval(v); fprintf(stderr, "[egl] swapInterval game=%d used=%d -> %d (now %d)\n", i, v, r, SDL_GL_GetSwapInterval()); return EGL_TRUE; }
+EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; const char *o = getenv("MCPE_SWAPINT"); int v = o ? atoi(o) : i; int r = SDL_GL_SetSwapInterval(v); g_vsync = v; fprintf(stderr, "[egl] swapInterval game=%d used=%d -> %d (now %d)\n", i, v, r, SDL_GL_GetSwapInterval()); return EGL_TRUE; }
 EXPORT int eglQuerySurface(EGLhandle d, EGLhandle s, EGLint a, EGLint *v) {
     (void)d; (void)s;
     int w = 640, h = 480;
