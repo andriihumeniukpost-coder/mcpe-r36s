@@ -204,7 +204,8 @@ GL_R(glVertexAttrib2f, unsigned, float, float)
 GL_R(glVertexAttrib3f, unsigned, float, float, float)
 GL_R(glVertexAttrib4f, unsigned, float, float, float, float)
 
-SOFT static void w_glUniform1f(int l, float a) { r_glUniform1f(l, a); }
+static unsigned ft_cur; static int ft_rd[4096];
+SOFT static void w_glUniform1f(int l, float a) { if (ft_cur < 4096 && l >= 0 && l == ft_rd[ft_cur]) { static int c; c++; if (c < 30 || c % 600 == 0) fprintf(stderr, "[fog] prog %u RENDER_DISTANCE = %.3f\n", ft_cur, a); } r_glUniform1f(l, a); }
 SOFT static void w_glUniform2f(int l, float a, float b) { r_glUniform2f(l, a, b); }
 SOFT static void w_glUniform3f(int l, float a, float b, float c) { r_glUniform3f(l, a, b, c); }
 SOFT static void w_glUniform4f(int l, float a, float b, float c, float d) { r_glUniform4f(l, a, b, c, d); }
@@ -284,6 +285,27 @@ SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, co
     r_glShaderSource(sh, k, np, NULL);
     for (int i = 0; i < k; i++) free(cp[i]);
 }
+
+/* ---- fog uniform tracing (diagnose black horizon band) ---- */
+static void (*r_glUseProgram)(unsigned);
+static int (*r_glGetUniformLocation)(unsigned, const char *);
+static void (*r_glUniform4fv)(int, int, const float *);
+static void (*r_glUniform3fv)(int, int, const float *);
+static void (*r_glUniform2fv)(int, int, const float *);
+static int ft_fc[PC_N], ft_fk[PC_N];
+SOFT static void w_glUseProgram(unsigned p) { ft_cur = p; r_glUseProgram(p); }
+SOFT static int w_glGetUniformLocation(unsigned p, const char *n) {
+    int l = r_glGetUniformLocation(p, n);
+    if (p < PC_N) { if (!ft_fc[p] && !ft_fk[p] && !ft_rd[p]) ft_fc[p] = ft_fk[p] = ft_rd[p] = -1;
+        if (!strcmp(n, "FOG_COLOR")) ft_fc[p] = l; else if (!strcmp(n, "FOG_CONTROL")) ft_fk[p] = l; else if (!strcmp(n, "RENDER_DISTANCE")) ft_rd[p] = l; }
+    return l;
+}
+static void ft_log(const char *what, const float *v, int n) {
+    static int c; c++; if (c < 40 || c % 600 == 0) { fprintf(stderr, "[fog] prog %u %s =", ft_cur, what); for (int i = 0; i < n; i++) fprintf(stderr, " %.3f", v[i]); fprintf(stderr, "\n"); }
+}
+SOFT static void w_glUniform4fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fc[ft_cur]) ft_log("FOG_COLOR", v, 4); r_glUniform4fv(l, c, v); }
+SOFT static void w_glUniform3fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fc[ft_cur]) ft_log("FOG_COLOR3", v, 3); r_glUniform3fv(l, c, v); }
+SOFT static void w_glUniform2fv(int l, int c, const float *v) { if (ft_cur < PC_N && l >= 0 && l == ft_fk[ft_cur]) ft_log("FOG_CONTROL", v, 2); r_glUniform2fv(l, c, v); }
 static int pc_try_load(unsigned pr, const char *path) {
     int fd = open(path, O_RDONLY); if (fd < 0) return 0;
     struct stat st; if (fstat(fd, &st) || st.st_size < 8) { close(fd); return 0; }
@@ -511,7 +533,7 @@ static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
