@@ -91,6 +91,8 @@ static FILE *mapf(FILE *f) {
     if (f && ((struct bfile *)f)->magic == BF_MAGIC) return ((struct bfile *)f)->real;
     return f;
 }
+static int rlog;
+#define RLOG(...) do { if (rlog < 200) { rlog++; fprintf(stderr, __VA_ARGS__); } } while (0)
 EXPORT int bc_vfprintf(FILE *f, const char *fmt, va_list ap) {
     int (*r)(FILE *, const char *, va_list) = R("vfprintf");
     return r(mapf(f), fmt, ap);
@@ -105,20 +107,22 @@ EXPORT int bc_fprintf(FILE *f, const char *fmt, ...) {
 EXPORT int bc_fputs(const char *s, FILE *f) { int (*r)(const char *, FILE *) = R("fputs"); return r(s, mapf(f)); }
 EXPORT int bc_fputc(int c, FILE *f) { int (*r)(int, FILE *) = R("fputc"); return r(c, mapf(f)); }
 EXPORT int bc_putc(int c, FILE *f) { int (*r)(int, FILE *) = R("fputc"); return r(c, mapf(f)); }
-EXPORT int bc_fgetc(FILE *f) { int (*r)(FILE *) = R("fgetc"); return r(mapf(f)); }
+EXPORT int bc_fgetc(FILE *f) { int (*r)(FILE *) = R("fgetc"); int x = r(mapf(f)); if (mapf(f) != stdin) RLOG("[io] fgetc(%p) = %d\n", (void *)f, x); return x; }
 EXPORT int bc_getc(FILE *f) { int (*r)(FILE *) = R("fgetc"); return r(mapf(f)); }
 EXPORT int bc_ungetc(int c, FILE *f) { int (*r)(int, FILE *) = R("ungetc"); return r(c, mapf(f)); }
-EXPORT char *bc_fgets(char *s, int n, FILE *f) { char *(*r)(char *, int, FILE *) = R("fgets"); return r(s, n, mapf(f)); }
+EXPORT char *bc_fgets(char *s, int n, FILE *f) { char *(*r)(char *, int, FILE *) = R("fgets"); char *x = r(s, n, mapf(f)); if (mapf(f) != stdin) RLOG("[io] fgets(%p) = %s\n", (void *)f, x ? "ok" : "NULL"); return x; }
 static int wlog;
 EXPORT size_t bc_fwrite(const void *p, size_t s, size_t n, FILE *f) { size_t (*r)(const void *, size_t, size_t, FILE *) = R("fwrite"); FILE *g = mapf(f);
     size_t x = r(p, s, n, g); int e = errno; if (g != stdout && g != stderr && wlog < 60) { wlog++; fprintf(stderr, "[io] fwrite(%p, %zu*%zu) = %zu err=%d\n", (void *)g, s, n, x, x != n ? e : 0); } errno = e; return x; }
-EXPORT size_t bc_fread(void *p, size_t s, size_t n, FILE *f) { size_t (*r)(void *, size_t, size_t, FILE *) = R("fread"); return r(p, s, n, mapf(f)); }
-EXPORT int bc_fflush(FILE *f) { int (*r)(FILE *) = R("fflush"); int x = f ? r(mapf(f)) : r(NULL); int e = errno; if (x && wlog < 120) { wlog++; fprintf(stderr, "[io] fflush(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
-EXPORT int bc_fclose(FILE *f) { int (*r)(FILE *) = R("fclose"); int w = f && ((struct bfile *)f)->magic == BF_MAGIC; FILE *g = mapf(f); int x = r(g); int e = errno; if (w) { ((struct bfile *)f)->magic = 0; free(f); } errno = e; return x; }
+EXPORT size_t bc_fread(void *p, size_t s, size_t n, FILE *f) { size_t (*r)(void *, size_t, size_t, FILE *) = R("fread"); FILE *g = mapf(f); size_t x = r(p, s, n, g); int e = errno;
+    if (g != stdin) { const unsigned char *b = p; RLOG("[io] fread(%p, %zu*%zu) = %zu [%02x %02x %02x %02x %02x %02x %02x %02x]\n", (void *)g, s, n, x, x > 0 ? b[0] : 0, x > 1 ? b[1] : 0, x > 2 ? b[2] : 0, x > 3 ? b[3] : 0, x > 4 ? b[4] : 0, x > 5 ? b[5] : 0, x > 6 ? b[6] : 0, x > 7 ? b[7] : 0); }
+    errno = e; return x; }
+EXPORT int bc_fflush(FILE *f) { int (*r)(FILE *) = R("fflush"); int x = f ? r(mapf(f)) : r(NULL); int e = errno; if (f && mapf(f) != stdout && mapf(f) != stderr && rlog < 200) { rlog++; fprintf(stderr, "[io] fflush(%p) = %d errno=%d\n", (void *)f, x, e); } errno = e; return x; }
+EXPORT int bc_fclose(FILE *f) { int (*r)(FILE *) = R("fclose"); int w = f && ((struct bfile *)f)->magic == BF_MAGIC; FILE *g = mapf(f); int x = r(g); int e = errno; RLOG("[io] fclose(%p) = %d\n", (void *)f, x); if (w) { ((struct bfile *)f)->magic = 0; free(f); } errno = e; return x; }
 EXPORT int bc_ferror(FILE *f) { int (*r)(FILE *) = R("ferror"); return r(mapf(f)); }
-EXPORT int bc_fseek(FILE *f, long o, int w) { int (*r)(FILE *, long, int) = R("fseek"); return r(mapf(f), o, w); }
+EXPORT int bc_fseek(FILE *f, long o, int w) { int (*r)(FILE *, long, int) = R("fseek"); int x = r(mapf(f), o, w); RLOG("[io] fseek(%p, %ld, %d) = %d\n", (void *)f, o, w, x); return x; }
 EXPORT int bc_fseeko(FILE *f, long o, int w) { int (*r)(FILE *, long, int) = R("fseeko"); return r(mapf(f), o, w); }
-EXPORT long bc_ftell(FILE *f) { long (*r)(FILE *) = R("ftell"); return r(mapf(f)); }
+EXPORT long bc_ftell(FILE *f) { long (*r)(FILE *) = R("ftell"); long x = r(mapf(f)); RLOG("[io] ftell(%p) = %ld\n", (void *)f, x); return x; }
 EXPORT long bc_ftello(FILE *f) { long (*r)(FILE *) = R("ftello"); return r(mapf(f)); }
 EXPORT void bc_rewind(FILE *f) { void (*r)(FILE *) = R("rewind"); r(mapf(f)); }
 EXPORT FILE *bc_fdopen(int fd, const char *m) { FILE *(*r)(int, const char *) = R("fdopen"); return wrapf(r(fd, m)); }
