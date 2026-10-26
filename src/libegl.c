@@ -191,6 +191,24 @@ SOFT static void w_glGenerateMipmap(unsigned t) {
     r_glGenerateMipmap(t);
 }
 
+
+static void dump_vbo(int vbo) {
+    static void (*bindb)(unsigned, unsigned); static void *(*mapr)(unsigned, long, long, unsigned); static unsigned char (*unmap)(unsigned);
+    static void (*getp)(unsigned, unsigned, void **); static void (*geti)(unsigned, int *); static void (*getbp)(unsigned, unsigned, int *);
+    if (!bindb) { bindb = SDL_GL_GetProcAddress("glBindBuffer"); mapr = SDL_GL_GetProcAddress("glMapBufferRange"); unmap = SDL_GL_GetProcAddress("glUnmapBuffer");
+        getp = SDL_GL_GetProcAddress("glGetVertexAttribPointerv"); geti = SDL_GL_GetProcAddress("glGetIntegerv"); getbp = SDL_GL_GetProcAddress("glGetBufferParameteriv"); }
+    if (!bindb || !mapr || !vbo) return;
+    int prev = 0; geti(0x8894, &prev);
+    for (unsigned a = 0; a < 3; a++) { void *pp = 0; getp(a, 0x8645, &pp); fprintf(stderr, "[gl]   attrib %u pointer/offset=%p\n", a, pp); }
+    bindb(0x8892, vbo);
+    int size = 0; getbp(0x8892, 0x8764, &size);
+    int n = size < 160 ? size : 160;
+    fprintf(stderr, "[gl]   vbo %d size=%d first bytes:\n", vbo, size);
+    unsigned char *m = mapr(0x8892, 0, n, 1);
+    if (m) { for (int i = 0; i < n; i += 20) { fprintf(stderr, "[gl]   v%d:", i / 20); for (int j = 0; j < 20 && i + j < n; j++) fprintf(stderr, " %02x", m[i + j]); fprintf(stderr, "\n"); } unmap(0x8892); }
+    else fprintf(stderr, "[gl]   map failed\n");
+    bindb(0x8892, prev);
+}
 static void probe_state(void) {
 
     typedef void (*fiv_t)(unsigned, int *);
@@ -229,6 +247,7 @@ static void probe_state(void) {
         glGetVertexAttribiv_(l, 0x8622, &en); glGetVertexAttribiv_(l, 0x889F, &bb); glGetVertexAttribiv_(l, 0x8623, &size);
         glGetVertexAttribiv_(l, 0x8625, &type); glGetVertexAttribiv_(l, 0x886A, &norm); glGetVertexAttribiv_(l, 0x8624, &stride);
         glGetVertexAttribfv_(l, 0x8626, cur);
+        if (i == 0) dump_vbo(bb);
         fprintf(stderr, "[gl]   attrib %s loc=%d enabled=%d vbo=%d size=%d type=%x norm=%d stride=%d current=%g %g %g %g\n", nm, l, en, bb, size, type, norm, stride, cur[0], cur[1], cur[2], cur[3]);
     }
 }
