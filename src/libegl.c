@@ -144,13 +144,34 @@ SOFT static void w_glTexImage2D(unsigned t, int l, int i, int w, int h, int b, u
     r_glTexImage2D(t, l, i, w, h, b, f, ty, p);
 }
 
+static void (*r_glTexStorage2DEXT)(unsigned, int, unsigned, int, int);
+static void (*r_glTexSubImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
+static void (*r_glTexParameteri)(unsigned, unsigned, int);
+static void (*r_glCompressedTexImage2D)(unsigned, int, unsigned, int, int, int, int, const void *);
+SOFT static void w_glTexStorage2DEXT(unsigned t, int lv, unsigned f, int w, int h) {
+    static int c; if (c < 25) { c++; fprintf(stderr, "[gl] glTexStorage2DEXT tgt=%x levels=%d ifmt=%x %dx%d\n", t, lv, f, w, h); }
+    r_glTexStorage2DEXT(t, lv, f, w, h);
+}
+SOFT static void w_glTexSubImage2D(unsigned t, int l, int x, int y, int w, int h, unsigned f, unsigned ty, const void *p) {
+    static int c; if (c < 40) { c++; const unsigned char *b = p; fprintf(stderr, "[gl] glTexSubImage2D lvl=%d @%d,%d %dx%d fmt=%x type=%x data=%s [%02x %02x %02x %02x %02x %02x %02x %02x]\n", l, x, y, w, h, f, ty, p ? "yes" : "null", p ? b[0] : 0, p ? b[1] : 0, p ? b[2] : 0, p ? b[3] : 0, p ? b[4] : 0, p ? b[5] : 0, p ? b[6] : 0, p ? b[7] : 0); }
+    r_glTexSubImage2D(t, l, x, y, w, h, f, ty, p);
+}
+SOFT static void w_glTexParameteri(unsigned t, unsigned pn, int v) {
+    static int c; if (c < 30) { c++; fprintf(stderr, "[gl] glTexParameteri tgt=%x pname=%x val=%x\n", t, pn, v); }
+    r_glTexParameteri(t, pn, v);
+}
+SOFT static void w_glCompressedTexImage2D(unsigned t, int l, unsigned f, int w, int h, int b, int sz, const void *p) {
+    static int c; if (c < 20) { c++; fprintf(stderr, "[gl] glCompressedTexImage2D lvl=%d fmt=%x %dx%d size=%d\n", l, f, w, h, sz); }
+    r_glCompressedTexImage2D(t, l, f, w, h, b, sz, p);
+}
+
 #define MAP(n) { #n, (void **)&r_##n, (void *)w_##n }
 static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glUniform1f), MAP(glUniform2f), MAP(glUniform3f), MAP(glUniform4f),
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D),
+    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
@@ -161,6 +182,7 @@ EXPORT void *eglGetProcAddress(const char *name) {
         }
     }
     void *p = SDL_GL_GetProcAddress(name);
+    { static int pc; if (pc < 400) { pc++; fprintf(stderr, "[egl] getProc %s %s\n", name, p ? "ok" : "MISSING"); } }
     if (!p) fprintf(stderr, "[egl] GL symbol not found: %s\n", name);
     return p;
 }
