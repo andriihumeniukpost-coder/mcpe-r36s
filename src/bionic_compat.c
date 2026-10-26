@@ -185,16 +185,16 @@ static void conv_stat(struct bionic_stat *o, const struct stat64 *s) {
     o->ctime = s->st_ctim.tv_sec; o->ctime_ns = s->st_ctim.tv_nsec;
 }
 EXPORT int bc_stat(const char *p, struct bionic_stat *o) {
-    int (*r)(const char *, struct stat64 *) = R("stat64");
-    struct stat64 s; int rc = r(p, &s); if (rc == 0) conv_stat(o, &s); return rc;
+    int (*r)(int, const char *, struct stat64 *) = R("__xstat64");
+    struct stat64 s; int rc = r(3, p, &s); if (rc == 0) conv_stat(o, &s); return rc;
 }
 EXPORT int bc_lstat(const char *p, struct bionic_stat *o) {
-    int (*r)(const char *, struct stat64 *) = R("lstat64");
-    struct stat64 s; int rc = r(p, &s); if (rc == 0) conv_stat(o, &s); return rc;
+    int (*r)(int, const char *, struct stat64 *) = R("__lxstat64");
+    struct stat64 s; int rc = r(3, p, &s); if (rc == 0) conv_stat(o, &s); return rc;
 }
 EXPORT int bc_fstat(int fd, struct bionic_stat *o) {
-    int (*r)(int, struct stat64 *) = R("fstat64");
-    struct stat64 s; int rc = r(fd, &s); if (rc == 0) conv_stat(o, &s); return rc;
+    int (*r)(int, int, struct stat64 *) = R("__fxstat64");
+    struct stat64 s; int rc = r(3, fd, &s); if (rc == 0) conv_stat(o, &s); return rc;
 }
 
 struct bionic_dirent {
