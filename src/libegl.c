@@ -245,13 +245,28 @@ SOFT static void w_glCompileShader(unsigned sh) {
     clock_gettime(CLOCK_MONOTONIC, &t1); { static int nc; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nc++; if (ms > 5) fprintf(stderr, "[slow] compile shader %u %.1f ms (total %d shaders %.0f ms)\n", sh, ms, nc, tot); }
     if (!ok) { char b[1024] = ""; r_glGetShaderInfoLog(sh, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] SHADER %u COMPILE FAILED: %s\n", sh, b); }
 }
-SOFT static void w_glLinkProgram(unsigned pr) {
-    ld(); struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); r_glLinkProgram(pr);
-    int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
-    clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5) fprintf(stderr, "[slow] link program %u %.1f ms (total %d programs %.0f ms)\n", pr, ms, nl, tot); }
-    if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
+/* ---- program binary cache: the game links ~700 programs lazily (15-70 ms each on Mali = frame hitches) ---- */
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#define PC_N 4096
+static unsigned long long pc_shash[PC_N], pc_phash[PC_N]; static unsigned pc_att[PC_N][8]; static int pc_natt[PC_N];
+static void (*r_glAttachShader)(unsigned, unsigned);
+static void (*r_glBindAttribLocation)(unsigned, unsigned, const char *);
+static void (*r_glGetProgramBinary)(unsigned, int, int *, unsigned *, void *);
+static void (*r_glProgramBinary)(unsigned, unsigned, const void *, int);
+static void (*r_glProgramParameteri)(unsigned, unsigned, int);
+static unsigned long long fnv(unsigned long long h, const void *d, size_t n) { const unsigned char *p = d; for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; } return h; }
+SOFT static void w_glAttachShader(unsigned pr, unsigned sh) {
+    if (pr < PC_N && pc_natt[pr] < 8) pc_att[pr][pc_natt[pr]++] = sh;
+    r_glAttachShader(pr, sh);
+}
+SOFT static void w_glBindAttribLocation(unsigned pr, unsigned i, const char *name) {
+    if (pr < PC_N) { pc_phash[pr] = fnv(pc_phash[pr] ? pc_phash[pr] : 1469598103934665603ULL, name, strlen(name)); pc_phash[pr] = fnv(pc_phash[pr], &i, sizeof i); }
+    r_glBindAttribLocation(pr, i, name);
 }
 SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, const int *len) {
+    if (sh < PC_N) { unsigned long long h = 1469598103934665603ULL; for (int i = 0; i < n; i++) h = fnv(h, src[i], len && len[i] >= 0 ? (size_t)len[i] : strlen(src[i])); pc_shash[sh] = h; }
     static int c; if (c < 8) { c++; fprintf(stderr, "[gl] ==== shader %u source (%d parts)\n", sh, n);
         for (int i = 0; i < n; i++) fprintf(stderr, "%.3000s\n", src[i]); fprintf(stderr, "[gl] ==== end\n"); }
     char *cp[8]; const char *np[8]; int k = n < 8 ? n : 8;
@@ -268,6 +283,46 @@ SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, co
     }
     r_glShaderSource(sh, k, np, NULL);
     for (int i = 0; i < k; i++) free(cp[i]);
+}
+static int pc_try_load(unsigned pr, const char *path) {
+    int fd = open(path, O_RDONLY); if (fd < 0) return 0;
+    struct stat st; if (fstat(fd, &st) || st.st_size < 8) { close(fd); return 0; }
+    char *buf = malloc(st.st_size); int ok = 0;
+    if (buf && read(fd, buf, st.st_size) == st.st_size) { unsigned fmt = *(unsigned *)buf; r_glProgramBinary(pr, fmt, buf + 4, (int)st.st_size - 4); int ls = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ls); ok = ls; }
+    free(buf); close(fd); return ok;
+}
+static void pc_save(unsigned pr, const char *path) {
+    int len = 0; r_glGetProgramiv(pr, 0x8741, &len); if (len <= 0 || len > (8 << 20)) return;
+    char *buf = malloc(len + 4); if (!buf) return; int got = 0; unsigned fmt = 0;
+    r_glGetProgramBinary(pr, len, &got, &fmt, buf + 4);
+    if (got > 0) { *(unsigned *)buf = fmt; char tmp[1400]; snprintf(tmp, sizeof tmp, "%s.tmp", path); int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) { int okw = write(fd, buf, got + 4) == got + 4; close(fd); if (okw) rename(tmp, path); else unlink(tmp); } }
+    free(buf);
+}
+SOFT static void w_glLinkProgram(unsigned pr) {
+    ld(); struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+    static int init, usable; static char dir[1100]; static int hits, misses;
+    if (!init) { init = 1; const char *d = getenv("MCPE_DATADIR");
+        r_glGetProgramBinary = SDL_GL_GetProcAddress("glGetProgramBinary"); r_glProgramBinary = SDL_GL_GetProcAddress("glProgramBinary"); r_glProgramParameteri = SDL_GL_GetProcAddress("glProgramParameteri");
+        if (d && r_glGetProgramBinary && r_glProgramBinary && !getenv("MCPE_NOSHCACHE")) { snprintf(dir, sizeof dir, "%s/shadercache", d); mkdir(dir, 0755); usable = 1; }
+        fprintf(stderr, "[shcache] %s (dir %s)\n", usable ? "enabled" : "disabled", dir); }
+    int cached = 0; char path[1300] = "";
+    if (usable && pr < PC_N && pc_natt[pr] > 0) {
+        unsigned long long h = pc_phash[pr] ? pc_phash[pr] : 1469598103934665603ULL;
+        h = fnv(h, getenv("MCPE_PREC") ? getenv("MCPE_PREC") : "highp", 5);
+        const char *rn = (const char *)r_glGetString(0x1F01), *vn = (const char *)r_glGetString(0x1F02);
+        if (rn) h = fnv(h, rn, strlen(rn)); if (vn) h = fnv(h, vn, strlen(vn));
+        for (int i = 0; i < pc_natt[pr]; i++) { unsigned sh = pc_att[pr][i]; unsigned long long sv = sh < PC_N ? pc_shash[sh] : 0; h = fnv(h, &sv, sizeof sv); }
+        snprintf(path, sizeof path, "%s/%016llx.bin", dir, h);
+        cached = pc_try_load(pr, path);
+        if (cached) hits++;
+    }
+    if (!cached) { if (r_glProgramParameteri) r_glProgramParameteri(pr, 0x8257, 1); r_glLinkProgram(pr); }
+    int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
+    if (!cached && ok && path[0]) { misses++; pc_save(pr, path); }
+    if (pr < PC_N) { pc_natt[pr] = 0; pc_phash[pr] = 0; }
+    clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5 || nl % 50 == 0) fprintf(stderr, "[slow] link program %u %.1f ms %s (total %d programs %.0f ms; cache hits %d misses %d)\n", pr, ms, cached ? "(cached)" : "", nl, tot, hits, misses); }
+    if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
 }
 SOFT static void w_glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void *p) {
     static int c; if (c < 40) { c++; fprintf(stderr, "[gl] glTexImage2D tgt=%x lvl=%d ifmt=%x %dx%d fmt=%x type=%x data=%s\n", t, l, i, w, h, f, ty, p ? "yes" : "null"); }
@@ -456,7 +511,7 @@ static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glCompileShader), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
