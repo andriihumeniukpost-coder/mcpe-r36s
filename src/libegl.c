@@ -138,7 +138,8 @@ SOFT static void w_glLinkProgram(unsigned pr) {
     if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
 }
 SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, const int *len) {
-    static int c; if (c < 3 && n > 0) { c++; fprintf(stderr, "[gl] shader %u source (%d parts): %.600s\n", sh, n, src[0]); }
+    static int c; if (c < 8) { c++; fprintf(stderr, "[gl] ==== shader %u source (%d parts)\n", sh, n);
+        for (int i = 0; i < n; i++) fprintf(stderr, "%.3000s\n", src[i]); fprintf(stderr, "[gl] ==== end\n"); }
     r_glShaderSource(sh, n, src, len);
 }
 SOFT static void w_glTexImage2D(unsigned t, int l, int i, int w, int h, int b, unsigned f, unsigned ty, const void *p) {
