@@ -49,3 +49,15 @@ bc_raise raise
 bc_kill kill
 bc_pthread_kill pthread_kill
 bc_abort abort
+bc_open open
+bc_mkdir mkdir
+bc_rename rename
+bc_unlink unlink
+bc_rmdir rmdir
+bc_opendir opendir
+bc_fopen fopen
+bc_fcntl fcntl
+bc_flock flock
+bc_ftruncate ftruncate
+bc_fsync fsync
+bc_access access

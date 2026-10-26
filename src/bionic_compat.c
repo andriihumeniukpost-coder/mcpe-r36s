@@ -394,3 +394,66 @@ EXPORT int bc_pthread_create(pthread_t *t, const struct battr *a, void *(*fn)(vo
 struct bcleanup { struct bcleanup *prev; void (*fn)(void *); void *arg; };
 EXPORT void __pthread_cleanup_push(struct bcleanup *c, void (*fn)(void *), void *arg) { c->prev = NULL; c->fn = fn; c->arg = arg; }
 EXPORT void __pthread_cleanup_pop(struct bcleanup *c, int execute) { if (execute && c->fn) c->fn(c->arg); }
+
+/* ------------------------------------------------ file-op tracing (diagnostics) */
+#include <fcntl.h>
+#include <sys/file.h>
+static int iolog;
+#define IOFAIL(fmt, ...) do { if (iolog < 150) { iolog++; fprintf(stderr, "[io] " fmt " -> errno=%d (%s)\n", __VA_ARGS__, errno, strerror(errno)); } } while (0)
+static int iointerest(const char *p) { return p && (strstr(p, "World") || strstr(p, "world") || strstr(p, "level")); }
+EXPORT int bc_open(const char *p, int fl, ...) {
+    va_list ap; va_start(ap, fl); int mode = va_arg(ap, int); va_end(ap);
+    int (*r)(const char *, int, ...) = R("open");
+    int fd = r(p, fl, mode); int e = errno;
+    if (fd < 0) { errno = e; IOFAIL("open(%s, 0x%x, %o)", p, fl, mode); }
+    else if (iointerest(p) && iolog < 150) { iolog++; fprintf(stderr, "[io] open(%s, 0x%x) = %d\n", p, fl, fd); }
+    errno = e; return fd;
+}
+EXPORT int bc_mkdir(const char *p, unsigned m) {
+    int (*r)(const char *, unsigned) = R("mkdir"); int x = r(p, m), e = errno;
+    if (x < 0 && e != EEXIST) { errno = e; IOFAIL("mkdir(%s, %o)", p, m); } else if (iointerest(p) && iolog < 150) { iolog++; fprintf(stderr, "[io] mkdir(%s) = %d\n", p, x); }
+    errno = e; return x;
+}
+EXPORT int bc_rename(const char *a, const char *b) {
+    int (*r)(const char *, const char *) = R("rename"); int x = r(a, b), e = errno;
+    if (x < 0) { errno = e; IOFAIL("rename(%s, %s)", a, b); } errno = e; return x;
+}
+EXPORT int bc_unlink(const char *p) {
+    int (*r)(const char *) = R("unlink"); int x = r(p), e = errno;
+    if (x < 0 && e != ENOENT) { errno = e; IOFAIL("unlink(%s)", p); } errno = e; return x;
+}
+EXPORT int bc_rmdir(const char *p) {
+    int (*r)(const char *) = R("rmdir"); int x = r(p), e = errno;
+    if (x < 0) { errno = e; IOFAIL("rmdir(%s)", p); } errno = e; return x;
+}
+EXPORT DIR *bc_opendir(const char *p) {
+    DIR *(*r)(const char *) = R("opendir"); DIR *d = r(p); int e = errno;
+    if (!d) { errno = e; IOFAIL("opendir(%s)", p); } errno = e; return d;
+}
+EXPORT FILE *bc_fopen(const char *p, const char *m) {
+    FILE *(*r)(const char *, const char *) = R("fopen"); FILE *f = r(p, m); int e = errno;
+    if (!f && e != ENOENT) { errno = e; IOFAIL("fopen(%s, %s)", p, m); }
+    else if (iointerest(p) && iolog < 150) { iolog++; fprintf(stderr, "[io] fopen(%s, %s) = %p\n", p, m, (void *)f); }
+    errno = e; return f;
+}
+EXPORT int bc_fcntl(int fd, int cmd, ...) {
+    va_list ap; va_start(ap, cmd); long arg = va_arg(ap, long); va_end(ap);
+    int (*r)(int, int, ...) = R("fcntl"); int x = r(fd, cmd, arg), e = errno;
+    if (x < 0) { errno = e; IOFAIL("fcntl(%d, %d)", fd, cmd); } errno = e; return x;
+}
+EXPORT int bc_flock(int fd, int op) {
+    int (*r)(int, int) = R("flock"); int x = r(fd, op), e = errno;
+    if (x < 0) { errno = e; IOFAIL("flock(%d, %d)", fd, op); } errno = e; return x;
+}
+EXPORT int bc_ftruncate(int fd, long n) {
+    int (*r)(int, long) = R("ftruncate"); int x = r(fd, n), e = errno;
+    if (x < 0) { errno = e; IOFAIL("ftruncate(%d, %ld)", fd, n); } errno = e; return x;
+}
+EXPORT int bc_fsync(int fd) {
+    int (*r)(int) = R("fsync"); int x = r(fd), e = errno;
+    if (x < 0) { errno = e; IOFAIL("fsync(%d)", fd); } errno = e; return x;
+}
+EXPORT int bc_access(const char *p, int m) {
+    int (*r)(const char *, int) = R("access"); int x = r(p, m), e = errno;
+    if (x < 0 && e != ENOENT) { errno = e; IOFAIL("access(%s, %d)", p, m); } errno = e; return x;
+}
