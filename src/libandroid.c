@@ -63,13 +63,13 @@ EXPORT AAssetDir *AAssetManager_openDir(AAssetManager *m, const char *dir) {
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", m->root, dir);
     DIR *d = opendir(path);
-    if (!d) return NULL;
     AAssetDir *ad = calloc(1, sizeof *ad);
     ad->d = d;
     return ad;
 }
 EXPORT const char *AAssetDir_getNextFileName(AAssetDir *ad) {
     struct dirent *e;
+    if (!ad || !ad->d) return NULL;
     while ((e = readdir(ad->d))) {
         if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
         if (e->d_type == DT_DIR) continue; /* Android lists files only */
@@ -77,7 +77,7 @@ EXPORT const char *AAssetDir_getNextFileName(AAssetDir *ad) {
     }
     return NULL;
 }
-EXPORT void AAssetDir_close(AAssetDir *ad) { if (ad) { closedir(ad->d); free(ad); } }
+EXPORT void AAssetDir_close(AAssetDir *ad) { if (ad) { if (ad->d) closedir(ad->d); free(ad); } }
 
 /* ------------------------------------------------------ configuration */
 EXPORT void *AConfiguration_new(void) { fprintf(stderr, "[android] AConfiguration_new\n"); return calloc(1, 64); }

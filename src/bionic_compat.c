@@ -208,6 +208,10 @@ struct bionic_sigaction {
 EXPORT int bc_sigaction(int sig, const struct bionic_sigaction *act, struct bionic_sigaction *old) {
     int (*r)(int, const struct sigaction *, struct sigaction *) = R("sigaction");
     struct sigaction a, o, *pa = NULL;
+    if (act && (sig == SIGSEGV || sig == SIGBUS || sig == SIGILL || sig == SIGFPE || sig == SIGABRT)) {
+        fprintf(stderr, "[compat] game sigaction(%d) ignored (host handler kept)\n", sig);
+        act = NULL;
+    }
     if (act) {
         memset(&a, 0, sizeof a);
         a.sa_sigaction = act->handler;
