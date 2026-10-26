@@ -439,7 +439,7 @@ static void prof_report(int round) {
         for (int a = pos; a > 0 && top[a].c > top[a - 1].c; a--) { char t[150]; int tc = top[a].c; memcpy(t, top[a].k, 150); memcpy(top[a].k, top[a - 1].k, 150); top[a].c = top[a - 1].c; memcpy(top[a - 1].k, t, 150); top[a - 1].c = tc; }
         i = j;
     }
-    fprintf(stderr, "[prof] ===== window %d: %u samples =====  (count | tid | thread | pc | game-caller)\n", round, n);
+    fprintf(stderr, "[prof] ===== window %d: %u samples =====  (RUNNING threads only: count | tid | thread | pc | game-caller)\n", round, n);
     for (int i = 0; i < nt; i++) fprintf(stderr, "[prof] %4d | %s\n", top[i].c, top[i].k);
     fflush(stderr);
 }
@@ -447,11 +447,14 @@ static void *prof_thread(void *arg) {
     (void)arg; sleep(25);
     for (int round = 0; round < 5; round++) {
         prof_i = 0;
-        for (int k = 0; k < 150; k++) {
+        for (int k = 0; k < 500; k++) {
             DIR *d = opendir("/proc/self/task"); if (!d) break;
             struct dirent *e; int me = (int)syscall(SYS_gettid);
-            while ((e = readdir(d))) { int tid = atoi(e->d_name); if (tid > 0 && tid != me) syscall(SYS_tgkill, getpid(), tid, SIGPROF); }
-            closedir(d); usleep(100000);
+            while ((e = readdir(d))) { int tid = atoi(e->d_name); if (tid <= 0 || tid == me) continue;
+                char sp[64], sb[256]; snprintf(sp, sizeof sp, "/proc/self/task/%d/stat", tid); int fd = open(sp, O_RDONLY); if (fd < 0) continue;
+                ssize_t m = read(fd, sb, sizeof sb - 1); close(fd); if (m <= 0) continue; sb[m] = 0;
+                char *q = strrchr(sb, ')'); if (q && q[2] == 'R') syscall(SYS_tgkill, getpid(), tid, SIGPROF); }
+            closedir(d); usleep(10000);
         }
         prof_report(round);
     }

@@ -159,6 +159,8 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
         static struct timespec w_end, c_end; static double g_wall, g_cpu, s_wall, s_cpu; static int frames, init; static struct timespec rep;
         struct timespec w0, c0, w1, c1; clock_gettime(CLOCK_MONOTONIC, &w0); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
         if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
+        { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_NOFINISH") == NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
+          if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
         SDL_GL_SwapWindow((SDL_Window *)shim_egl_window);
         clock_gettime(CLOCK_MONOTONIC, &w1); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c1);
         s_wall += (w1.tv_sec - w0.tv_sec) * 1e3 + (w1.tv_nsec - w0.tv_nsec) / 1e6; s_cpu += (c1.tv_sec - c0.tv_sec) * 1e3 + (c1.tv_nsec - c0.tv_nsec) / 1e6;
@@ -171,7 +173,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     }
     return EGL_TRUE;
 }
-EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; SDL_GL_SetSwapInterval(i); return EGL_TRUE; }
+EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; const char *o = getenv("MCPE_SWAPINT"); int v = o ? atoi(o) : i; int r = SDL_GL_SetSwapInterval(v); fprintf(stderr, "[egl] swapInterval game=%d used=%d -> %d (now %d)\n", i, v, r, SDL_GL_GetSwapInterval()); return EGL_TRUE; }
 EXPORT int eglQuerySurface(EGLhandle d, EGLhandle s, EGLint a, EGLint *v) {
     (void)d; (void)s;
     int w = 640, h = 480;
