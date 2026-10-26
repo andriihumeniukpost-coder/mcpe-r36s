@@ -220,6 +220,15 @@ static void *need(void *h, const char *sym) {
 static AInputQueue *queue;
 static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
+volatile int host_cursor[3] = {320, 240, 1}; /* x, y, visible (read by libegl) */
+static int touch_down;
+static void send_touch(int action) {
+    AInputEvent e; memset(&e, 0, sizeof e);
+    e.type = EV_MOTION; e.source = 0x00001002; /* AINPUT_SOURCE_TOUCHSCREEN */ e.device = 2;
+    e.action = action; e.pointer_count = 1; e.pointer_id[0] = 0;
+    e.x[0] = (float)host_cursor[0]; e.y[0] = (float)host_cursor[1];
+    queue_push(queue, &e);
+}
 
 static void send_key(int action, int keycode) {
     AInputEvent e; memset(&e, 0, sizeof e);
@@ -452,10 +461,22 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[host] activity started\n");
 
     SDL_GameController *pad = NULL;
-    int running = 1;
+    int running = 1; int dpad[4] = {0}; float stick[2] = {0}; Uint32 last_tick = SDL_GetTicks();
     while (running && !*finish) {
         SDL_Event ev;
-        if (!SDL_WaitEventTimeout(&ev, 100)) continue;
+        int got = SDL_WaitEventTimeout(&ev, 16);
+        { /* cursor motion: left stick (analog) + d-pad */
+            Uint32 now = SDL_GetTicks(); float dt = (now - last_tick) / 1000.0f; last_tick = now; if (dt > 0.1f) dt = 0.1f;
+            float vx = (dpad[3] - dpad[2]) * 260.0f, vy = (dpad[1] - dpad[0]) * 260.0f;
+            if (stick[0] > 0.2f || stick[0] < -0.2f) vx += stick[0] * 420.0f;
+            if (stick[1] > 0.2f || stick[1] < -0.2f) vy += stick[1] * 420.0f;
+            if (vx != 0 || vy != 0) {
+                int nx = host_cursor[0] + (int)(vx * dt + (vx > 0 ? 0.5f : -0.5f)), ny = host_cursor[1] + (int)(vy * dt + (vy > 0 ? 0.5f : -0.5f));
+                if (nx < 0) nx = 0; if (nx > 639) nx = 639; if (ny < 0) ny = 0; if (ny > 479) ny = 479;
+                if (nx != host_cursor[0] || ny != host_cursor[1]) { host_cursor[0] = nx; host_cursor[1] = ny; if (touch_down) send_touch(2); }
+            }
+        }
+        if (!got) continue;
         do {
             switch (ev.type) {
                 case SDL_QUIT: running = 0; break;
@@ -464,13 +485,23 @@ int main(int argc, char **argv) {
                     break;
                 case SDL_CONTROLLERBUTTONDOWN:
                 case SDL_CONTROLLERBUTTONUP: {
-                    int kc = map_button(ev.cbutton.button);
-                    if (kc) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
+                    int dn = ev.type == SDL_CONTROLLERBUTTONDOWN, b = ev.cbutton.button;
+                    if (b == SDL_CONTROLLER_BUTTON_A || b == SDL_CONTROLLER_BUTTON_X) {   /* tap at cursor */
+                        if (dn && !touch_down) { touch_down = 1; send_touch(0); }
+                        else if (!dn && touch_down) { touch_down = 0; send_touch(1); }
+                    } else if (b == SDL_CONTROLLER_BUTTON_B) send_key(dn ? 0 : 1, 4);       /* BACK */
+                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_UP) dpad[0] = dn;
+                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) dpad[1] = dn;
+                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT) dpad[2] = dn;
+                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) dpad[3] = dn;
+                    else { int kc = map_button(b); if (kc) send_key(dn ? 0 : 1, kc); }
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {
                     int a = map_axis(ev.caxis.axis);
-                    if (a >= 0) {
+                    if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) { stick[0] = ev.caxis.value / 32767.0f; }
+                    else if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) { stick[1] = ev.caxis.value / 32767.0f; }
+                    else if (a >= 0) {
                         float v = ev.caxis.value / 32767.0f;
                         if (v > -0.15f && v < 0.15f) v = 0;
                         axes[a] = v;

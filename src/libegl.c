@@ -54,6 +54,26 @@ static unsigned (*r_glGetError)(void);
 static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void);
 static void probe_pixels(void);
+extern volatile int host_cursor[3] __attribute__((weak));
+static void draw_cursor(void) {
+    if (!&host_cursor[0] || !host_cursor[2]) return;
+    static void (*gi)(unsigned, int *), (*en)(unsigned), (*dis)(unsigned), (*sc)(int, int, int, int), (*cc)(float, float, float, float), (*cl)(unsigned), (*gf)(unsigned, float *), (*cm)(unsigned char, unsigned char, unsigned char, unsigned char), (*gb)(unsigned, unsigned char *);
+    static unsigned char (*ise)(unsigned);
+    if (!gi) { gi = SDL_GL_GetProcAddress("glGetIntegerv"); en = SDL_GL_GetProcAddress("glEnable"); dis = SDL_GL_GetProcAddress("glDisable"); sc = SDL_GL_GetProcAddress("glScissor");
+        cc = SDL_GL_GetProcAddress("glClearColor"); cl = SDL_GL_GetProcAddress("glClear"); gf = SDL_GL_GetProcAddress("glGetFloatv"); cm = SDL_GL_GetProcAddress("glColorMask");
+        gb = SDL_GL_GetProcAddress("glGetBooleanv"); ise = SDL_GL_GetProcAddress("glIsEnabled"); }
+    if (!gi || !sc || !cc || !cl || !cm || !gb || !ise) return;
+    int box[4]; float col[4]; unsigned char mask[4]; int fb = 0;
+    gi(0x0C10, box); gf(0x0C22, col); gb(0x0C23, mask); unsigned char was = ise(0x0C11); gi(0x8CA6, &fb);
+    if (fb) return;
+    int W = 640, H = 480; SDL_GL_GetDrawableSize((SDL_Window *)shim_egl_window, &W, &H);
+    int x = host_cursor[0], y = H - host_cursor[1];
+    en(0x0C11); cm(1, 1, 1, 1);
+    sc(x - 7, y - 7, 15, 15); cc(0, 0, 0, 1); cl(0x4000);
+    sc(x - 5, y - 5, 11, 11); cc(1, 1, 1, 1); cl(0x4000);
+    sc(box[0], box[1], box[2], box[3]); cc(col[0], col[1], col[2], col[3]); cm(mask[0], mask[1], mask[2], mask[3]);
+    if (!was) dis(0x0C11);
+}
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();
@@ -61,6 +81,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
     if (n == 200 || n == 1500) probe_pixels();
     n++;
+    draw_cursor();
     SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
 }
 EXPORT int eglSwapInterval(EGLhandle d, EGLint i) { (void)d; SDL_GL_SetSwapInterval(i); return EGL_TRUE; }
