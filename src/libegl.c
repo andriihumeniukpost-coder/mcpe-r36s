@@ -209,6 +209,7 @@ SOFT static void w_glTexStorage2D(unsigned t, int lv, unsigned f, int w, int h) 
     if (f >= 0x1906 && f <= 0x190A) { /* unsized format: emulate EXT_texture_storage with mutable levels */
         for (int l = 0, ww = w, hh = h; l < lv; l++, ww = ww > 1 ? ww / 2 : 1, hh = hh > 1 ? hh / 2 : 1)
             r_glTexImage2D(t, l, f, ww, hh, 0, f, 0x1401, NULL);
+        r_glTexParameteri(t, 0x813D, lv - 1); /* TEXTURE_MAX_LEVEL: chain is complete with just these levels */
     } else
     r_glTexStorage2D(t, lv, f, w, h);
     { unsigned e = r_glGetError ? r_glGetError() : 0; if (e) fprintf(stderr, "[gl] glTexStorage2D ERROR 0x%x\n", e); }

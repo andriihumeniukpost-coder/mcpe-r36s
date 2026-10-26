@@ -473,18 +473,6 @@ int main(int argc, char **argv) {
     while (running && !*finish) {
         SDL_Event ev;
         int got = SDL_WaitEventTimeout(&ev, 16);
-        { /* cursor motion: left stick (analog) + d-pad */
-            Uint32 now = SDL_GetTicks(); float dt = (now - last_tick) / 1000.0f; last_tick = now; if (dt > 0.1f) dt = 0.1f;
-            float vx = 0, vy = 0;
-            if (stick[0] > 0.2f || stick[0] < -0.2f) vx = stick[0] * 420.0f;
-            if (stick[1] > 0.2f || stick[1] < -0.2f) vy = stick[1] * 420.0f;
-            if (vx != 0 || vy != 0) host_cursor[2] = 1;
-            if (vx != 0 || vy != 0) {
-                int nx = host_cursor[0] + (int)(vx * dt + (vx > 0 ? 0.5f : -0.5f)), ny = host_cursor[1] + (int)(vy * dt + (vy > 0 ? 0.5f : -0.5f));
-                if (nx < 0) nx = 0; if (nx > 639) nx = 639; if (ny < 0) ny = 0; if (ny > 479) ny = 479;
-                if (nx != host_cursor[0] || ny != host_cursor[1]) { host_cursor[0] = nx; host_cursor[1] = ny; if (touch_down) send_touch(2); }
-            }
-        }
         if (!got) continue;
         do {
             switch (ev.type) {
@@ -494,23 +482,13 @@ int main(int argc, char **argv) {
                     break;
                 case SDL_CONTROLLERBUTTONDOWN:
                 case SDL_CONTROLLERBUTTONUP: {
-                    int dn = ev.type == SDL_CONTROLLERBUTTONDOWN, b = ev.cbutton.button;
-                    if (b == SDL_CONTROLLER_BUTTON_X) {   /* tap at cursor */ host_cursor[2] = 1;
-                        if (dn && !touch_down) { touch_down = 1; send_touch(0); }
-                        else if (!dn && touch_down) { touch_down = 0; send_touch(1); }
-                    } else if (b == SDL_CONTROLLER_BUTTON_B) send_key(dn ? 0 : 1, 4);       /* BACK */
-                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_UP) { dpad[0] = dn; dpad_axes(dpad); }
-                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_DOWN) { dpad[1] = dn; dpad_axes(dpad); }
-                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT) { dpad[2] = dn; dpad_axes(dpad); }
-                    else if (b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) { dpad[3] = dn; dpad_axes(dpad); }
-                    else { int kc = map_button(b); if (kc) send_key(dn ? 0 : 1, kc); }
+                    int kc = map_button(ev.cbutton.button);
+                    if (kc) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {
                     int a = map_axis(ev.caxis.axis);
-                    if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) stick[0] = ev.caxis.value / 32767.0f;
-                    else if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) stick[1] = ev.caxis.value / 32767.0f;
-                    else if (a >= 0) {
+                    if (a >= 0) {
                         float v = ev.caxis.value / 32767.0f;
                         if (v > -0.15f && v < 0.15f) v = 0;
                         axes[a] = v;
