@@ -66,30 +66,30 @@ static int fps_value;
 static double ov_logic_ms, ov_logic_cpu, ov_swap_ms;         /* 0.5 s averages, filled in eglSwapBuffers */
 static double ov_frame_avg, ov_frame_worst;
 static int ov_shc_hits, ov_shc_miss; static double ov_shc_ms;
-/* 3x5 font: digits, A-Z, a few symbols (rows top->bottom, 3 bits each) */
-static const unsigned char font_digits[10][5] = { {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7} };
-static const unsigned char font_alpha[26][5] = {
-    {2,5,7,5,5},{6,5,6,5,6},{3,4,4,4,3},{6,5,5,5,6},{7,4,6,4,7},{7,4,6,4,4},{3,4,5,5,3},{5,5,7,5,5},{7,2,2,2,7},{1,1,1,5,2},{5,5,6,5,5},{4,4,4,4,7},{5,7,7,5,5},
-    {6,5,5,5,5},{2,5,5,5,2},{6,5,6,4,4},{2,5,5,7,3},{6,5,6,5,5},{3,4,2,1,6},{7,2,2,2,2},{5,5,5,5,7},{5,5,5,5,2},{5,5,7,7,5},{5,5,2,5,5},{5,5,2,2,2},{7,1,2,4,7} };
+/* 5x7 font (rows top->bottom, 5 bits each), 6x8 cells */
+static const unsigned char font57[][7] = {
+ {14,17,19,21,25,17,14},{4,12,4,4,4,4,14},{14,17,1,2,4,8,31},{30,1,1,14,1,1,30},{2,6,10,18,31,2,2},{31,16,30,1,1,17,14},{6,8,16,30,17,17,14},{31,1,2,4,8,8,8},{14,17,17,14,17,17,14},{14,17,17,15,1,2,12},
+ {14,17,17,31,17,17,17},{30,17,17,30,17,17,30},{14,17,16,16,16,17,14},{30,17,17,17,17,17,30},{31,16,16,30,16,16,31},{31,16,16,30,16,16,16},{14,17,16,23,17,17,15},{17,17,17,31,17,17,17},{14,4,4,4,4,4,14},{7,2,2,2,2,18,12},{17,18,20,24,20,18,17},{16,16,16,16,16,16,31},{17,27,21,21,17,17,17},
+ {17,25,21,19,17,17,17},{14,17,17,17,17,17,14},{30,17,17,30,16,16,16},{14,17,17,17,21,18,13},{30,17,17,30,20,18,17},{15,16,16,14,1,1,30},{31,4,4,4,4,4,4},{17,17,17,17,17,17,14},{17,17,17,17,17,10,4},{17,17,17,21,21,27,17},{17,17,10,4,10,17,17},{17,17,10,4,4,4,4},{31,1,2,4,8,16,31} };
 static const unsigned char *glyph(char c) {
-    static const unsigned char blank[5] = {0,0,0,0,0}, dot[5] = {0,0,0,0,2}, colon[5] = {0,2,0,2,0}, pct[5] = {5,1,2,4,5}, slash[5] = {1,1,2,4,4}, dash[5] = {0,0,7,0,0};
-    if (c >= '0' && c <= '9') return font_digits[c - '0'];
-    if (c >= 'A' && c <= 'Z') return font_alpha[c - 'A'];
-    if (c >= 'a' && c <= 'z') return font_alpha[c - 'a'];
-    switch (c) { case '.': return dot; case ':': return colon; case '%': return pct; case '/': return slash; case '-': return dash; default: return blank; }
+    static const unsigned char blank[7] = {0,0,0,0,0,0,0}, dot[7] = {0,0,0,0,0,12,12}, colon[7] = {0,12,12,0,12,12,0}, pct[7] = {25,26,2,4,8,11,19}, slash[7] = {1,2,2,4,8,8,16}, dash[7] = {0,0,0,31,0,0,0}, plus[7] = {0,4,4,31,4,4,0};
+    if (c >= '0' && c <= '9') return font57[c - '0'];
+    if (c >= 'A' && c <= 'Z') return font57[10 + c - 'A'];
+    if (c >= 'a' && c <= 'z') return font57[10 + c - 'a'];
+    switch (c) { case '.': return dot; case ':': return colon; case '%': return pct; case '/': return slash; case '-': return dash; case '+': return plus; default: return blank; }
 }
-#define OVW 192
-#define OVH 64
+#define OVW 320
+#define OVH 128
 static unsigned char ov_buf[OVW * OVH * 4];
 static unsigned ov_tex, ov_prog; static int ov_lines_used, ov_dirty = 1, ov_failed, ov_fps_chars;
 static void ov_px(int x, int y, unsigned rgb, int a) { if (x < 0 || y < 0 || x >= OVW || y >= OVH) return; unsigned char *p = ov_buf + (y * OVW + x) * 4; p[0] = rgb >> 16; p[1] = rgb >> 8; p[2] = rgb; p[3] = a; }
 static void ov_text(int line, const char *s, unsigned rgb) {
-    int y0 = line * 6;
+    int y0 = line * 8;
     for (int pass = 0; pass < 2; pass++)
-        for (int i = 0; s[i] && i < 47; i++) {
+        for (int i = 0; s[i] && i < 52; i++) {
             const unsigned char *g = glyph(s[i]);
-            for (int r = 0; r < 5; r++) for (int c = 0; c < 3; c++) if (g[r] & (4 >> c)) {
-                if (pass == 0) ov_px(i * 4 + c + 1, y0 + r + 1, 0, 255); else ov_px(i * 4 + c, y0 + r, rgb, 255); }
+            for (int r = 0; r < 7; r++) for (int c = 0; c < 5; c++) if (g[r] & (16 >> c)) {
+                if (pass == 0) ov_px(i * 6 + c + 1, y0 + r + 1, 0, 230); else ov_px(i * 6 + c, y0 + r, rgb, 255); }
         }
 }
 static void ov_build(int mode) {
@@ -100,11 +100,10 @@ static void ov_build(int mode) {
     if (ov_hide_txt[0]) ov_text(1, ov_hide_txt, 0xFF8080);
     if (mode >= 2 && &host_ov_lines[0][0]) {
         int n = ov_hide_txt[0] ? 2 : 1; char l[64];
-        snprintf(l, sizeof l, "FRAME %.1f MS WORST %.0f", ov_frame_avg, ov_frame_worst); ov_text(n++, l, 0xFFFFFF);
-        snprintf(l, sizeof l, "LOGIC %.1f MS CPU %.1f", ov_logic_ms, ov_logic_cpu); ov_text(n++, l, 0xFFFFFF);
-        snprintf(l, sizeof l, "SWAP WAIT %.1f MS", ov_swap_ms); ov_text(n++, l, 0xFFFFFF);
-        for (int i = 0; i < 8 && n < 16; i++) if (host_ov_lines[i][0]) { unsigned c = i < 2 ? 0x80FF80 : i < 4 ? 0x80C0FF : i < 6 ? 0xFFD080 : 0xD0D0D0; ov_text(n++, host_ov_lines[i], c); }
-        snprintf(l, sizeof l, "SHADERS CACHED %d NEW %d", ov_shc_hits, ov_shc_miss); ov_text(n++, l, 0xD0D0D0);
+        snprintf(l, sizeof l, "FRAME %.1fMS WORST %.0f", ov_frame_avg, ov_frame_worst); ov_text(n++, l, 0xFFFFFF);
+        snprintf(l, sizeof l, "LOGIC %.1f SWAP %.1f", ov_logic_ms, ov_swap_ms); ov_text(n++, l, 0xFFFFFF);
+        for (int i = 0; i < 8 && n < 15; i++) if (host_ov_lines[i][0]) { unsigned c = i < 2 ? 0x80FF80 : i < 4 ? 0x80C0FF : i < 6 ? 0xFFD080 : 0xD0D0D0; ov_text(n++, host_ov_lines[i], c); }
+        snprintf(l, sizeof l, "SHADERS %d NEW %d", ov_shc_hits, ov_shc_miss); ov_text(n++, l, 0xD0D0D0);
         ov_lines_used = n - 1;
     }
     ov_dirty = 1;
@@ -162,8 +161,8 @@ static void draw_overlay(void) {
     use(ov_prog); u1i(uloc(ov_prog, "s"), 0); bindb(0x8892, 0); en_a(0); en_a(1);
     #define QUAD(px, py, pw, ph, u0, v0, u1, v1) do { float x0 = 2.0f * (px) / W - 1, x1 = 2.0f * ((px) + (pw)) / W - 1, y0 = 1 - 2.0f * (py) / H, y1 = 1 - 2.0f * ((py) + (ph)) / H; \
         float q[16] = { x0, y0, u0, v0,  x1, y0, u1, v0,  x0, y1, u0, v1,  x1, y1, u1, v1 }; vap(0, 2, 0x1406, 0, 16, q); vap(1, 2, 0x1406, 0, 16, q + 2); draw(0x0005, 0, 4); } while (0)
-    { const int BS = 6; int cw = ov_fps_chars * 4 + 1; QUAD(8, 6, cw * BS, 7 * BS, 0.0f, 0.0f, (float)cw / OVW, 7.0f / OVH); }
-    if (ov_lines_used > 0) { const int S = 2; int rows = ov_lines_used * 6 + 1; QUAD(8, 6 + 7 * 6 + 6, OVW * S, rows * S, 0.0f, 6.0f / OVH, 1.0f, (6.0f + rows) / OVH); }
+    { const int BS = 4; int cw = ov_fps_chars * 6; QUAD(8, 6, cw * BS, 8 * BS, 0.0f, 0.0f, (float)cw / OVW, 8.0f / OVH); }
+    if (ov_lines_used > 0) { const int S = 2; int rows = ov_lines_used * 8; QUAD(8, 6 + 8 * 4 + 4, OVW * S, rows * S, 0.0f, 8.0f / OVH, 1.0f, (8.0f + rows) / OVH); }
     /* ---- restore ---- */
     use(prog);
     for (int i = 0; i < 2; i++) { bindb(0x8892, at[i].buf); vap(i, at[i].size, at[i].type, (unsigned char)at[i].norm, at[i].stride, at[i].ptr); if (at[i].en) en_a(i); else dis_a(i); }

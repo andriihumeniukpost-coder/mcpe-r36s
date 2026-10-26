@@ -255,14 +255,14 @@ static void *stats_thread(void *arg) {
         if (have_gpu) { int gl = 0, gm = 0; char p[340]; snprintf(p, sizeof p, "%s/load", gpu); if (slurp(p, t, sizeof t)) gl = atoi(t); snprintf(p, sizeof p, "%s/cur_freq", gpu); if (slurp(p, t, sizeof t)) gm = (int)(atoll(t) / 1000000); snprintf(host_ov_lines[2], 48, "GPU %d%% %dMHZ", gl, gm); }
         else snprintf(host_ov_lines[2], 48, "GPU N/A");
         long tot = 0, av = 0; if (slurp("/proc/meminfo", b, sizeof b)) { char *q; if ((q = strstr(b, "MemTotal:"))) tot = atol(q + 9); if ((q = strstr(b, "MemAvailable:"))) av = atol(q + 13); }
-        snprintf(host_ov_lines[3], 48, "RAM %ld/%ld MB FREE %ld", (tot - av) / 1024, tot / 1024, av / 1024);
+        snprintf(host_ov_lines[3], 48, "RAM %ld/%ld FREE %ld", (tot - av) / 1024, tot / 1024, av / 1024);
         long swp = 0, cch = 0; { char *q; if ((q = strstr(b, "SwapTotal:"))) swp = atol(q + 10); if ((q = strstr(b, "SwapFree:"))) swp -= atol(q + 9); if ((q = strstr(b, "\nCached:"))) cch = atol(q + 8); }
-        snprintf(host_ov_lines[6], 48, "CACHE %ld MB SWAP %ld MB", cch / 1024, swp / 1024);
+        snprintf(host_ov_lines[6], 48, "CACHE %ld SWAP %ld", cch / 1024, swp / 1024);
         long rss = 0; if (slurp("/proc/self/statm", t, sizeof t)) { long a, r2; if (sscanf(t, "%ld %ld", &a, &r2) == 2) rss = r2 * 4096 / 1048576; }
         long vm = 0; int nthr = 0; if (slurp("/proc/self/statm", t, sizeof t)) { long a; if (sscanf(t, "%ld", &a) == 1) vm = a * 4096 / 1048576; }
         { char sb[1024]; if (slurp("/proc/self/status", sb, sizeof sb)) { char *q = strstr(sb, "Threads:"); if (q) nthr = atoi(q + 8); } }
-        snprintf(host_ov_lines[4], 48, "GAME %ld MB VM %ld CPU %d%%", rss, vm, proc);
-        { char lb[64] = ""; double l1 = 0; if (slurp("/proc/loadavg", lb, sizeof lb)) l1 = atof(lb); snprintf(host_ov_lines[5], 48, "THREADS %d LOAD %.2f", nthr, l1); }
+        snprintf(host_ov_lines[4], 48, "GAME %ld VM %ld CPU %d%%", rss, vm, proc);
+        { char lb[64] = ""; double l1 = 0; if (slurp("/proc/loadavg", lb, sizeof lb)) l1 = atof(lb); snprintf(host_ov_lines[5], 48, "THR %d LOAD %.2f", nthr, l1); }
         { static unsigned long long pt4[4], pi4[4]; char cb[2048]; int pc[4] = {0, 0, 0, 0};
           if (slurp("/proc/stat", cb, sizeof cb)) { for (int k = 0; k < 4; k++) { char key[16]; snprintf(key, sizeof key, "\ncpu%d ", k); char *q = strstr(cb, key); unsigned long long u, n, sy, id, io, ir, so, st;
               if (q && sscanf(q + 6, "%llu %llu %llu %llu %llu %llu %llu %llu", &u, &n, &sy, &id, &io, &ir, &so, &st) == 8) { unsigned long long tt = u + n + sy + id + io + ir + so + st, ii = id + io; if (pt4[k] && tt > pt4[k]) pc[k] = (int)(100 - 100 * (ii - pi4[k]) / (tt - pt4[k])); pt4[k] = tt; pi4[k] = ii; } } }
