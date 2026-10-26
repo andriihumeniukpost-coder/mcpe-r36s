@@ -60,6 +60,8 @@ extern char host_ov_lines[8][48] __attribute__((weak));      /* stats lines from
 static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
 extern volatile int host_hide_idx __attribute__((weak));     /* draw-bisect: -1 off, else index into the programs drawn last frame */
 static char ov_hide_txt[48];
+static char *hb_src[4096];
+static void hb_frame_end(void);
 static int fps_value;
 static double ov_logic_ms, ov_logic_cpu, ov_swap_ms;         /* 0.5 s averages, filled in eglSwapBuffers */
 static double ov_frame_avg, ov_frame_worst;
@@ -345,7 +347,7 @@ SOFT static void w_glUniform2fv(int l, int c, const float *v) { if (ft_cur < PC_
 static void (*r_glDrawArrays)(unsigned, int, int);
 static void (*r_glDrawElements)(unsigned, int, unsigned, const void *);
 static unsigned hb_cur[64], hb_last[64]; static int hb_ncur, hb_nlast, hb_dr[64], hb_vt[64], hb_dr_l[64], hb_vt_l[64]; static unsigned hb_hide;
-static char *hb_src[PC_N]; static unsigned hb_psh[PC_N][8]; static int hb_npsh[PC_N];
+static unsigned hb_psh[PC_N][8]; static int hb_npsh[PC_N];
 static int hb_slot(void) { for (int i = 0; i < hb_ncur; i++) if (hb_cur[i] == ft_cur) return i; if (hb_ncur < 64) { hb_cur[hb_ncur] = ft_cur; hb_dr[hb_ncur] = hb_vt[hb_ncur] = 0; return hb_ncur++; } return -1; }
 SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) return; r_glDrawArrays(m, f, c); }
 SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) return; r_glDrawElements(m, c, t, p); }
