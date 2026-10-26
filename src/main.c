@@ -223,6 +223,7 @@ static AInputQueue *queue;
 static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
 volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) */
+volatile int host_hide_idx = -1;              /* draw bisect (SELECT + d-pad left/right) */
 volatile int host_ov_mode = 1;                /* overlay: 0 off, 1 FPS, 2 FPS+CPU/GPU/RAM; cycled with L3+R3 */
 char host_ov_lines[8][48];                    /* filled by stats_thread, drawn by libegl */
 static int slurp(const char *path, char *buf, size_t n) {
@@ -617,6 +618,10 @@ int main(int argc, char **argv) {
                         host_ov_mode = (host_ov_mode + 1) % 3;           /* L3+R3: off -> FPS -> FPS/CPU/GPU/RAM */
                         fprintf(stderr, "[pad] overlay mode %d\n", host_ov_mode); break;
                     }
+                    { static int sel; if (b == SDL_CONTROLLER_BUTTON_BACK) sel = dn;
+                      if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
+                          host_hide_idx += b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ? 1 : -1; if (host_hide_idx < -1) host_hide_idx = -1;
+                          fprintf(stderr, "[pad] hide index %d\n", host_hide_idx); break; } }
                     if (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN || b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
                         /* d-pad is read by the game as HAT axes (not as key events) */
                         static int dp[4];
