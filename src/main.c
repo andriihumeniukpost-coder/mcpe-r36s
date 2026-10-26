@@ -221,6 +221,7 @@ static AInputQueue *queue;
 static void (*queue_push)(AInputQueue *, const AInputEvent *);
 static float axes[MAX_AXES];
 volatile int host_cursor[3] = {320, 240, 0}; /* x, y, visible (read by libegl) */
+volatile int host_fps_on = 1;                 /* own FPS counter, toggled with R3 */
 static int touch_down;
 static void send_axes(void);
 static void dpad_axes(const int *d) { /* d-pad = menu navigation: hat axes + left stick axes */
@@ -487,6 +488,8 @@ int main(int argc, char **argv) {
                     { static int n; if (n++ < 150) fprintf(stderr, "[pad] button %d %s\n", ev.cbutton.button, ev.type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up"); }
                     int kc = map_button(ev.cbutton.button);
                     if (kc) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
+                    if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, 134); /* SELECT -> F3: game's debug screen */
+                    if (ev.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK && ev.type == SDL_CONTROLLERBUTTONDOWN) host_fps_on = !host_fps_on;
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {

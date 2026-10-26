@@ -69,9 +69,20 @@ echo "== deps of mcpe (armhf loader):"; LD_TRACE_LOADED_OBJECTS=1 ./mcpe 2>&1 | 
 echo "== 32-bit runtime libs:"; ls -la "$LIBSYS"/libSDL2* "$LIBSYS"/libstdc++* "$LIBSYS"/libgcc_s* "$LIBSYS"/libEGL* "$LIBSYS"/libGLESv2* 2>&1 | head -20
 
 [ -n "$GPTOKEYB" ] && { $GPTOKEYB "mcpe" & }
+# performance: pin CPU and GPU governors to "performance" while the game runs (restored afterwards)
+SAVED=""
+setgov() { echo "$2" | sudo -n tee "$1" >/dev/null 2>&1 || echo "$2" > "$1" 2>/dev/null; }
+for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/class/devfreq/*/governor; do
+  [ -e "$g" ] || continue
+  SAVED="$SAVED$g=$(cat "$g" 2>/dev/null)
+"
+  setgov "$g" performance
+done
+echo "== governors now: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>&1) / gpu: $(cat /sys/class/devfreq/*/governor 2>&1 | tr '\n' ' ')"
 echo "== starting"; sync
 ./mcpe
 RC=$?
+printf '%s' "$SAVED" | while IFS== read -r g v; do [ -n "$g" ] && [ -n "$v" ] && setgov "$g" "$v"; done
 echo "== mcpe exited with code $RC"
 if [ $RC -eq 1 ]; then
   echo "== load failed; re-running with dynamic-loader trace"

@@ -55,6 +55,7 @@ static const unsigned char *(*r_glGetString)(unsigned);
 static void ld(void);
 static void probe_pixels(void);
 extern volatile int host_cursor[3] __attribute__((weak));
+extern volatile int host_fps_on __attribute__((weak));
 static int fps_value;
 static const unsigned char digs[10][5] = { {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},{7,5,7,5,7},{7,5,7,1,7} };
 static void draw_overlay(void) {
@@ -75,7 +76,7 @@ static void draw_overlay(void) {
     en(0x0C11); cm(1, 1, 1, 1);
     if (cur) { int x = host_cursor[0], y = H - host_cursor[1];
         sc(x - 7, y - 7, 15, 15); cc(0, 0, 0, 1); cl(0x4000); sc(x - 5, y - 5, 11, 11); cc(1, 1, 1, 1); cl(0x4000); }
-    { /* FPS counter, top-left */
+    if (!&host_fps_on || host_fps_on) { /* FPS counter, top-left */
         char txt[8]; int n = snprintf(txt, sizeof txt, "%d", fps_value); const int S = 3, X0 = 4, Y0 = H - 4 - 5 * S;
         sc(X0 - 2, Y0 - 2, n * 4 * S + 3, 5 * S + 4); cc(0, 0, 0, 1); cl(0x4000);
         cc(1, 1, 0, 1);
