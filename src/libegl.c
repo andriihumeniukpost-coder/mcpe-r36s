@@ -158,6 +158,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     { /* frame timing: wall + this thread's CPU time in the game vs. inside swap */
         static struct timespec w_end, c_end; static double g_wall, g_cpu, s_wall, s_cpu; static int frames, init; static struct timespec rep;
         struct timespec w0, c0, w1, c1; clock_gettime(CLOCK_MONOTONIC, &w0); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &c0);
+        if (init) { double fw = (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; if (fw > 60) fprintf(stderr, "[slow] frame %.0f ms (cpu %.0f ms)\n", fw, (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6); }
         if (init) { g_wall += (w0.tv_sec - w_end.tv_sec) * 1e3 + (w0.tv_nsec - w_end.tv_nsec) / 1e6; g_cpu += (c0.tv_sec - c_end.tv_sec) * 1e3 + (c0.tv_nsec - c_end.tv_nsec) / 1e6; }
         { static int fin = -1; static void (*r_glFinish)(void); if (fin < 0) { fin = getenv("MCPE_FINISH") != NULL; r_glFinish = SDL_GL_GetProcAddress("glFinish"); }
           if (fin && r_glFinish) { r_glFinish(); struct timespec wf; clock_gettime(CLOCK_MONOTONIC, &wf); static double f_wall; f_wall += (wf.tv_sec - w0.tv_sec) * 1e3 + (wf.tv_nsec - w0.tv_nsec) / 1e6; static int fc; if (++fc % 300 == 0) { fprintf(stderr, "[finish] avg glFinish %.1f ms\n", f_wall / 300); f_wall = 0; } w0 = wf; } }
@@ -239,13 +240,15 @@ static void ld(void) {
     L(glGetShaderiv); L(glGetProgramiv); L(glGetShaderInfoLog); L(glGetProgramInfoLog); L(glGetError); L(glGetString);
 }
 SOFT static void w_glCompileShader(unsigned sh) {
-    ld(); r_glCompileShader(sh);
+    ld(); struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); r_glCompileShader(sh);
     int ok = 0; r_glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+    clock_gettime(CLOCK_MONOTONIC, &t1); { static int nc; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nc++; if (ms > 5) fprintf(stderr, "[slow] compile shader %u %.1f ms (total %d shaders %.0f ms)\n", sh, ms, nc, tot); }
     if (!ok) { char b[1024] = ""; r_glGetShaderInfoLog(sh, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] SHADER %u COMPILE FAILED: %s\n", sh, b); }
 }
 SOFT static void w_glLinkProgram(unsigned pr) {
-    ld(); r_glLinkProgram(pr);
+    ld(); struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); r_glLinkProgram(pr);
     int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
+    clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5) fprintf(stderr, "[slow] link program %u %.1f ms (total %d programs %.0f ms)\n", pr, ms, nl, tot); }
     if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
 }
 SOFT static void w_glShaderSource(unsigned sh, int n, const char *const *src, const int *len) {
