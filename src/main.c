@@ -477,17 +477,29 @@ int main(int argc, char **argv) {
         do {
             switch (ev.type) {
                 case SDL_QUIT: running = 0; break;
+                case SDL_JOYBUTTONDOWN: case SDL_JOYBUTTONUP: { static int n; if (n++ < 100) fprintf(stderr, "[joy] button %d %s\n", ev.jbutton.button, ev.type == SDL_JOYBUTTONDOWN ? "down" : "up"); break; }
+                case SDL_JOYHATMOTION: { static int n; if (n++ < 100) fprintf(stderr, "[joy] hat %d value %d\n", ev.jhat.hat, ev.jhat.value); break; }
                 case SDL_CONTROLLERDEVICEADDED:
-                    if (!pad) pad = SDL_GameControllerOpen(ev.cdevice.which);
+                    if (!pad) { pad = SDL_GameControllerOpen(ev.cdevice.which); fprintf(stderr, "[pad] opened %s mapping=%s\n", pad ? SDL_GameControllerName(pad) : "?", pad ? SDL_GameControllerMapping(pad) : "?"); }
                     break;
                 case SDL_CONTROLLERBUTTONDOWN:
                 case SDL_CONTROLLERBUTTONUP: {
+                    { static int n; if (n++ < 150) fprintf(stderr, "[pad] button %d %s\n", ev.cbutton.button, ev.type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up"); }
                     int kc = map_button(ev.cbutton.button);
                     if (kc) send_key(ev.type == SDL_CONTROLLERBUTTONDOWN ? 0 : 1, kc);
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {
                     int a = map_axis(ev.caxis.axis);
+                    { static int n; if (n++ < 150 && (ev.caxis.value > 12000 || ev.caxis.value < -12000)) fprintf(stderr, "[pad] axis %d = %d\n", ev.caxis.axis, ev.caxis.value); }
+                    if (ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                        /* triggers: report as axes AND as L2/R2 key presses (the game accepts either) */
+                        int right = ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT, on = ev.caxis.value > 12000;
+                        static int state[2];
+                        if (state[right] != on) { state[right] = on; send_key(on ? 0 : 1, right ? 105 : 104); }
+                        axes[right ? 18 : 17] = on ? 1.0f : 0.0f; axes[right ? 22 : 23] = axes[right ? 18 : 17]; send_axes();
+                        break;
+                    }
                     if (a >= 0) {
                         float v = ev.caxis.value / 32767.0f;
                         if (v > -0.15f && v < 0.15f) v = 0;
