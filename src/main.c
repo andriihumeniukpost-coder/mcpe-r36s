@@ -316,6 +316,25 @@ static void *watchdog(void *arg) {
     return NULL;
 }
 
+/* Anything that is not the host (SDL, pulse, the Android libs) must not replace the crash handler */
+static int host_allow;
+int sigaction(int sig, const struct sigaction *act, struct sigaction *old) {
+    static int (*real)(int, const struct sigaction *, struct sigaction *);
+    if (!real) real = dlsym(RTLD_NEXT, "sigaction");
+    if (!host_allow && act && (sig == SIGSEGV || sig == SIGBUS)) {
+        uintptr_t off; void *ra = __builtin_return_address(0); const char *w = elf_where((uintptr_t)ra, &off); Dl_info di;
+        fprintf(stderr, "[host] sigaction(%d) ignored, caller %p %s+0x%lx\n", sig, ra, w ? w : (dladdr(ra, &di) && di.dli_fname ? di.dli_fname : "?"), w ? (unsigned long)off : 0UL);
+        act = NULL;
+    }
+    return real(sig, act, old);
+}
+void (*signal(int sig, void (*h)(int)))(int) {
+    if (sig == SIGSEGV || sig == SIGBUS) { fprintf(stderr, "[host] signal(%d) ignored\n", sig); return SIG_DFL; }
+    static void (*(*real)(int, void (*)(int)))(int);
+    if (!real) real = dlsym(RTLD_NEXT, "signal");
+    return real(sig, h);
+}
+
 int main(int argc, char **argv) {
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
@@ -327,10 +346,12 @@ int main(int argc, char **argv) {
     mkdir(datadir, 0755);
     g_assets_root = assetdir;
     setvbuf(stderr, NULL, _IONBF, 0);
+    host_allow = 1;
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = crash; sa.sa_flags = SA_SIGINFO;
     { struct sigaction s2; memset(&s2, 0, sizeof s2); s2.sa_sigaction = usr2; s2.sa_flags = SA_SIGINFO | SA_RESTART; sigaction(SIGUSR2, &s2, NULL); }
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL); sigaction(SIGILL, &sa, NULL); sigaction(SIGABRT, &sa, NULL);
+    host_allow = 0;
     fprintf(stderr, "[host] start, base=%s\n", base);
     (void)argv;
 
