@@ -58,7 +58,7 @@ EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     ld();
     if (n == 0 && r_glGetString) fprintf(stderr, "[gl] VENDOR=%s RENDERER=%s VERSION=%s\n", (const char *)r_glGetString(0x1F00), (const char *)r_glGetString(0x1F01), (const char *)r_glGetString(0x1F02));
     if (n < 3 || n % 120 == 0) { unsigned e = r_glGetError ? r_glGetError() : 0; fprintf(stderr, "[egl] swap #%d glError=0x%x\n", n, e); }
-    if (n == 200 || n == 600) probe_pixels();
+    if (n == 200 || n == 600 || n == 1500 || n == 3000) probe_pixels();
     n++;
     SDL_GL_SwapWindow((SDL_Window *)shim_egl_window); return EGL_TRUE;
 }
@@ -189,7 +189,50 @@ SOFT static void w_glGenerateMipmap(unsigned t) {
     static int c; if (c < 20) { c++; fprintf(stderr, "[gl] glGenerateMipmap %x\n", t); }
     r_glGenerateMipmap(t);
 }
+
+static void probe_state(void) {
+
+    typedef void (*fiv_t)(unsigned, int *);
+    typedef void (*fv_t)(int, int, float *);
+    static fiv_t glGetIntegerv_; static void (*glGetActiveUniform_)(unsigned, unsigned, int, int *, int *, unsigned *, char *);
+    static void (*glGetUniformfv_)(unsigned, int, float *); static int (*glGetUniformLocation_)(unsigned, const char *);
+    static void (*glGetProgramiv_)(unsigned, unsigned, int *); static void (*glGetVertexAttribiv_)(unsigned, unsigned, int *);
+    static void (*glGetVertexAttribfv_)(unsigned, unsigned, float *); static void (*glGetTexParameteriv_)(unsigned, unsigned, int *);
+    static void (*glGetActiveAttrib_)(unsigned, unsigned, int, int *, int *, unsigned *, char *);
+    static int (*glGetAttribLocation_)(unsigned, const char *);
+    if (!glGetIntegerv_) {
+        glGetIntegerv_ = SDL_GL_GetProcAddress("glGetIntegerv"); glGetActiveUniform_ = SDL_GL_GetProcAddress("glGetActiveUniform");
+        glGetUniformfv_ = SDL_GL_GetProcAddress("glGetUniformfv"); glGetProgramiv_ = SDL_GL_GetProcAddress("glGetProgramiv");
+        glGetVertexAttribiv_ = SDL_GL_GetProcAddress("glGetVertexAttribiv"); glGetVertexAttribfv_ = SDL_GL_GetProcAddress("glGetVertexAttribfv");
+        glGetTexParameteriv_ = SDL_GL_GetProcAddress("glGetTexParameteriv"); glGetActiveAttrib_ = SDL_GL_GetProcAddress("glGetActiveAttrib");
+        glGetAttribLocation_ = SDL_GL_GetProcAddress("glGetAttribLocation");
+    }
+    int prog = 0, tex = 0, unit = 0, nu = 0, na = 0;
+    glGetIntegerv_(0x8B8D, &prog); glGetIntegerv_(0x8069, &tex); glGetIntegerv_(0x84E0, &unit);
+    fprintf(stderr, "[gl] STATE program=%d tex2d_binding=%d active_unit=%x\n", prog, tex, unit);
+    if (tex) { int v[4] = {0}; for (int i = 0; i < 4; i++) glGetTexParameteriv_(0x0DE1, 0x2800 + i, &v[i]); fprintf(stderr, "[gl]   tex params mag=%x min=%x wrapS=%x wrapT=%x\n", v[0], v[1], v[2], v[3]); }
+    if (!prog) return;
+    glGetProgramiv_(prog, 0x8B86, &nu); glGetProgramiv_(prog, 0x8B89, &na);
+    for (int i = 0; i < nu; i++) {
+        char nm[64] = ""; int sz = 0; unsigned ty = 0; glGetActiveUniform_(prog, i, 63, NULL, &sz, &ty, nm);
+        int loc = glGetUniformLocation_ ? 0 : 0; (void)loc;
+        static int (*gl)(unsigned, const char *); if (!gl) gl = SDL_GL_GetProcAddress("glGetUniformLocation");
+        int l = gl(prog, nm); float v[16] = {0};
+        if (l >= 0 && ty != 0x8B5A && ty != 0x8B5B && ty != 0x8B5C) glGetUniformfv_(prog, l, v);
+        fprintf(stderr, "[gl]   uniform %s loc=%d type=%x = %g %g %g %g\n", nm, l, ty, v[0], v[1], v[2], v[3]);
+    }
+    for (int i = 0; i < na; i++) {
+        char nm[64] = ""; int sz = 0; unsigned ty = 0; glGetActiveAttrib_(prog, i, 63, NULL, &sz, &ty, nm);
+        static int (*ga)(unsigned, const char *); if (!ga) ga = SDL_GL_GetProcAddress("glGetAttribLocation");
+        int l = ga(prog, nm); int en = 0, bb = 0, size = 0, type = 0, norm = 0, stride = 0; float cur[4] = {0};
+        glGetVertexAttribiv_(l, 0x8622, &en); glGetVertexAttribiv_(l, 0x889F, &bb); glGetVertexAttribiv_(l, 0x8623, &size);
+        glGetVertexAttribiv_(l, 0x8625, &type); glGetVertexAttribiv_(l, 0x886A, &norm); glGetVertexAttribiv_(l, 0x8624, &stride);
+        glGetVertexAttribfv_(l, 0x8626, cur);
+        fprintf(stderr, "[gl]   attrib %s loc=%d enabled=%d vbo=%d size=%d type=%x norm=%d stride=%d current=%g %g %g %g\n", nm, l, en, bb, size, type, norm, stride, cur[0], cur[1], cur[2], cur[3]);
+    }
+}
 static void probe_pixels(void) {
+    probe_state();
     if (!r_glReadPixels) r_glReadPixels = SDL_GL_GetProcAddress("glReadPixels");
     if (!r_glReadPixels) return;
     static const int pts[][2] = { {10, 10}, {320, 240}, {320, 400}, {100, 300}, {500, 100} };
