@@ -64,6 +64,7 @@ static void probe_pixels(void);
 extern volatile int host_ov_mode __attribute__((weak));      /* 0 off, 1 big FPS, 2 full stats */
 extern char host_ov_lines[8][48] __attribute__((weak));      /* stats lines from the host sampler */
 static void (*r_glGetProgramiv)(unsigned, unsigned, int *);
+extern volatile int host_exp __attribute__((weak));  /* GPU experiment mode (SELECT+START) */
 extern volatile int host_hide_idx __attribute__((weak));     /* draw-bisect: -1 off, else index into the programs drawn last frame */
 static char ov_hide_txt[48];
 static int sc_pct(void);
@@ -543,12 +544,23 @@ static void hb_state(const char *tag) {
 static void hb_state_log(void) { static unsigned last; static int n; if (last != hb_hide) { last = hb_hide; n = 0; } if (n++ < 2) hb_state("hidden draw"); }
 static void hb_state_log_v(void) { static int n; if (n++ < 3) hb_state("void plane"); }
 static int hb_slot(void) { for (int i = 0; i < hb_ncur; i++) if (hb_cur[i] == ft_cur) return i; if (hb_ncur < 64) { hb_cur[hb_ncur] = ft_cur; hb_dr[hb_ncur] = hb_vt[hb_ncur] = 0; return hb_ncur++; } return -1; }
-SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawArrays(m, f, c); }
-SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawElements(m, c, t, p); }
+static unsigned char hb_at[PC_N];
+static int gx_blend; static unsigned gx_st[4][2];   /* 0 opaque 1 blend 2 alphatest : draws, verts */
+static void (*r_glEnable)(unsigned), (*r_glDisable)(unsigned);
+SOFT static void w_glEnable(unsigned c) { if (c == 0x0BE2) gx_blend = 1; r_glEnable(c); }
+SOFT static void w_glDisable(unsigned c) { if (c == 0x0BE2) gx_blend = 0; r_glDisable(c); }
+static int gx_skip(int c) {
+    int e = (&host_exp) ? host_exp : 0; int cls = gx_blend ? 1 : (ft_cur < PC_N && hb_at[ft_cur]) ? 2 : 0; gx_st[cls][0]++; gx_st[cls][1] += c;
+    return (e == 1 && cls == 1) || (e == 2 && cls == 2);
+}
+SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawArrays(m, f, c); }
+SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawElements(m, c, t, p); }
 static void hb_frame_end(void) {
+    { static int fr; static const char *nm[3] = {"opaque", "blend", "atest"}; if (++fr % 300 == 0) { fprintf(stderr, "[mix] exp=%d per-frame:", (&host_exp) ? host_exp : 0); for (int i = 0; i < 3; i++) fprintf(stderr, " %s %u draws %u verts;", nm[i], gx_st[i][0] / 300, gx_st[i][1] / 300); fprintf(stderr, "\n"); }
+      if (fr % 300 == 0) memset(gx_st, 0, sizeof gx_st); }
     memcpy(hb_last, hb_cur, sizeof hb_cur); memcpy(hb_dr_l, hb_dr, sizeof hb_dr); memcpy(hb_vt_l, hb_vt, sizeof hb_vt); hb_nlast = hb_ncur; hb_ncur = 0;
     static int last_idx = -2; int idx = (&host_hide_idx) ? host_hide_idx : -1;
-    if (idx < 0) { hb_hide = 0; ov_hide_txt[0] = 0; }
+    if (idx < 0) { hb_hide = 0; ov_hide_txt[0] = 0; { static const char *en[] = {"", "EXP1 NO BLEND", "EXP2 NO ALPHATEST", "EXP3 NEAREST TEX"}; int e = (&host_exp) ? host_exp : 0; if (e > 0 && e < 4) snprintf(ov_hide_txt, sizeof ov_hide_txt, "%s", en[e]); } }
     else if (hb_nlast > 0) { int k = idx % hb_nlast; hb_hide = hb_last[k]; snprintf(ov_hide_txt, sizeof ov_hide_txt, "HIDE %d/%d PROG %u DRAWS %d", k + 1, hb_nlast, hb_hide, hb_dr_l[k]);
         if (idx != last_idx) { fprintf(stderr, "[hide] %d/%d prog %u draws %d verts %d defines:", k + 1, hb_nlast, hb_hide, hb_dr_l[k], hb_vt_l[k]);
             for (int a = 0; a < hb_npsh[hb_hide]; a++) { const char *t = hb_src[hb_psh[hb_hide][a] < PC_N ? hb_psh[hb_hide][a] : 0]; while (t && (t = strstr(t, "#define "))) { t += 8; const char *e = t; while (*e && *e != '\n' && *e != ' ' && *e != '(') e++; fprintf(stderr, " %.*s", (int)(e - t), t); t = e; } }
@@ -592,7 +604,7 @@ SOFT static void w_glLinkProgram(unsigned pr) {
     if (!cached) { if (r_glProgramParameteri) r_glProgramParameteri(pr, 0x8257, 1); r_glLinkProgram(pr); }
     int ok = 0; r_glGetProgramiv(pr, GL_LINK_STATUS, &ok);
     if (!cached && ok && path[0]) { misses++; ov_shc_miss = misses; pc_save(pr, path); }
-    if (pr < PC_N) { hb_npsh[pr] = pc_natt[pr]; memcpy(hb_psh[pr], pc_att[pr], sizeof hb_psh[pr]); hb_plain[pr] = (unsigned char)hb_compute_plain(pr); pc_natt[pr] = 0; pc_phash[pr] = 0; }
+    if (pr < PC_N) { hb_npsh[pr] = pc_natt[pr]; memcpy(hb_psh[pr], pc_att[pr], sizeof hb_psh[pr]); hb_plain[pr] = (unsigned char)hb_compute_plain(pr); hb_at[pr] = 0; for (int a = 0; a < hb_npsh[pr]; a++) { const char *t = hb_src[hb_psh[pr][a] < PC_N ? hb_psh[pr][a] : 0]; if (t && (strstr(t, "ALPHA_TEST") || strstr(t, "discard"))) hb_at[pr] = 1; } pc_natt[pr] = 0; pc_phash[pr] = 0; }
     clock_gettime(CLOCK_MONOTONIC, &t1); { static int nl; static double tot; double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6; tot += ms; nl++; if (ms > 5 || nl % 50 == 0) fprintf(stderr, "[slow] link program %u %.1f ms %s (total %d programs %.0f ms; cache hits %d misses %d)\n", pr, ms, cached ? "(cached)" : "", nl, tot, hits, misses); }
     if (!ok) { char b[1024] = ""; r_glGetProgramInfoLog(pr, sizeof b - 1, NULL, b); fprintf(stderr, "[gl] PROGRAM %u LINK FAILED: %s\n", pr, b); }
 }
@@ -616,6 +628,7 @@ SOFT static void w_glTexSubImage2D(unsigned t, int l, int x, int y, int w, int h
 }
 SOFT static void w_glTexParameteri(unsigned t, unsigned pn, int v) {
     static int c; if (c < 30) { c++; fprintf(stderr, "[gl] glTexParameteri tgt=%x pname=%x val=%x\n", t, pn, v); }
+    { static int en = -1; if (en < 0) en = getenv("MCPE_NEAREST") != NULL; int e = en ? 3 : (&host_exp) ? host_exp : 0; if (e == 3 && pn == 0x2801) v = 0x2600; if (e == 3 && pn == 0x2800) v = 0x2600; }
     r_glTexParameteri(t, pn, v);
 }
 SOFT static void w_glCompressedTexImage2D(unsigned t, int l, unsigned f, int w, int h, int b, int sz, const void *p) {
@@ -783,7 +796,7 @@ static struct { const char *name; void **real; void *wrap; } wraps[] = {
     MAP(glClearColor), MAP(glClearDepthf), MAP(glDepthRangef), MAP(glLineWidth),
     MAP(glPolygonOffset), MAP(glBlendColor), MAP(glSampleCoverage), MAP(glTexParameterf),
     MAP(glVertexAttrib1f), MAP(glVertexAttrib2f), MAP(glVertexAttrib3f), MAP(glVertexAttrib4f),
-    MAP(glBindFramebuffer), MAP(glViewport), MAP(glScissor), MAP(glDrawArrays), MAP(glDrawElements), MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform1fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
+    MAP(glBindFramebuffer), MAP(glViewport), MAP(glScissor), MAP(glDrawArrays), MAP(glDrawElements), MAP(glEnable), MAP(glDisable), MAP(glUseProgram), MAP(glGetUniformLocation), MAP(glUniform4fv), MAP(glUniform1fv), MAP(glUniform3fv), MAP(glUniform2fv), MAP(glCompileShader), MAP(glAttachShader), MAP(glBindAttribLocation), MAP(glLinkProgram), MAP(glShaderSource), MAP(glTexImage2D), MAP(glTexStorage2DEXT), MAP(glGenTextures), MAP(glBindTexture), MAP(glDeleteTextures), MAP(glTexStorage2D), MAP(glUniform1i), MAP(glActiveTexture), MAP(glGenerateMipmap), MAP(glTexSubImage2D), MAP(glTexParameteri), MAP(glCompressedTexImage2D),
 };
 
 EXPORT void *eglGetProcAddress(const char *name) {
