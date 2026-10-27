@@ -489,3 +489,17 @@ EXPORT int bc_access(const char *p, int m) {
     int (*r)(const char *, int) = R("access"); int x = r(p, m), e = errno;
     if (x < 0 && e != ENOENT) { errno = e; IOFAIL("access(%s, %d)", p, m); } errno = e; return x;
 }
+
+/* Bionic has strlcpy/strlcat; glibc < 2.38 (ArkOS ships 2.30) does not. MCPE 1.2+ imports strlcpy. */
+EXPORT size_t bc_strlcpy(char *dst, const char *src, size_t size) {
+    size_t n = strlen(src);
+    if (size) { size_t c = n >= size ? size - 1 : n; memcpy(dst, src, c); dst[c] = 0; }
+    return n;
+}
+EXPORT size_t bc_strlcat(char *dst, const char *src, size_t size) {
+    size_t dl = strnlen(dst, size), sl = strlen(src);
+    if (dl == size) return size + sl;
+    size_t c = sl >= size - dl ? size - dl - 1 : sl;
+    memcpy(dst + dl, src, c); dst[dl + c] = 0;
+    return dl + sl;
+}

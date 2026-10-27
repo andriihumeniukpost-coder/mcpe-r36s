@@ -47,3 +47,11 @@ GitHub Actions (`.github/workflows/build.yml`) собирает в armhf Ubuntu 
 Режим включается автоматически, если в APK нет `libfmod.so`: GLES1.1 эмулируется поверх GLES2 (`src/libgles1.c`), звук идёт через OpenSL buffer queue.
 Управление: левый стик/D-pad — движение, A=Cross, B=Circle(назад), X=Square, Y=Triangle, L1/R1, START/SELECT;
 правый стик — указатель для меню (A = клик) или обзор; **R3 переключает** указатель/обзор. L3+R3 — оверлей, SELECT+L1/R1 — масштаб рендера.
+
+## Minecraft PE 1.2.x (экспериментально, папка mcpe115 / `pack/Minecraft115.sh`)
+1.2.10.2 (Bedrock-движок) отличается от 1.1.5 импортами, которых раньше не было:
+- `AAsset_getLength64`, `AAsset_getRemainingLength64`, `AAsset_seek64` — теперь реализованы в `src/libandroid.c` как настоящие
+  `int64_t`-функции (на ARM EABI off64_t возвращается в r0:r1, поэтому подмена на 32-битные имена в dynstr — не вариант).
+  **Патчить `libminecraftpe.so` больше не нужно** — берётся оригинал из APK.
+- `strlcpy`/`strlcat` — в glibc 2.30 (ArkOS) их нет, добавлены в `src/bionic_compat.c`.
+Лаунчер сам перепаковывает `libminecraftpe.so`/`libfmod.so`/`assets` при смене APK (маркер `libs/.apk`).

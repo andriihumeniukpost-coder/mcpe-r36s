@@ -58,6 +58,16 @@ EXPORT int32_t AAsset_seek(AAsset *a, int32_t off, int whence) {
     if (p < 0 || p > a->len) return -1;
     return a->pos = p;
 }
+/* 64-bit variants: MCPE 1.2+ imports these (off64_t is returned in r0:r1 on ARM EABI, so they MUST be real int64 functions;
+ * aliasing them to the 32-bit ones leaves r1 undefined). */
+EXPORT int64_t AAsset_getLength64(AAsset *a) { return (int64_t)a->len; }
+EXPORT int64_t AAsset_getRemainingLength64(AAsset *a) { return (int64_t)(a->len - a->pos); }
+EXPORT int64_t AAsset_seek64(AAsset *a, int64_t off, int whence) {
+    int64_t p = whence == SEEK_SET ? off : whence == SEEK_CUR ? (int64_t)a->pos + off : (int64_t)a->len + off;
+    if (p < 0 || p > a->len) return -1;
+    a->pos = (int32_t)p;
+    return p;
+}
 
 EXPORT AAssetDir *AAssetManager_openDir(AAssetManager *m, const char *dir) {
     char path[1024];

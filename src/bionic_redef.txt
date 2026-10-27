@@ -71,3 +71,5 @@ bc_ftell ftell
 bc_ftello ftello
 bc_rewind rewind
 bc_fdopen fdopen
+bc_strlcpy strlcpy
+bc_strlcat strlcat
