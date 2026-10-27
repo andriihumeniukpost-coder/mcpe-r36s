@@ -88,8 +88,19 @@ for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor /sys/class/devfre
 done
 echo "== governors now: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>&1) / gpu: $(cat /sys/class/devfreq/*/governor 2>&1 | tr '\n' ' ')"
 echo "== starting"; sync
+# diagnostics: free memory + game RSS every second, so a silent kill leaves a trail (look for [mem] lines)
+( while kill -0 $$ 2>/dev/null; do
+    P=$(pidof mcpe 2>/dev/null | awk '{print $1}')
+    echo "[mem] $(date +%T) avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)MB free=$(awk '/MemFree/{print int($2/1024)}' /proc/meminfo)MB swapfree=$(awk '/SwapFree/{print int($2/1024)}' /proc/meminfo)MB rss=$(awk '/VmRSS/{print int($2/1024)}' /proc/${P:-0}/status 2>/dev/null)MB"
+    sleep 1
+  done ) &
+MEMPID=$!
+T0=$(date +%s)
 ./mcpe
 RC=$?
+echo "== mcpe ran for $(( $(date +%s) - T0 )) s"
+kill $MEMPID 2>/dev/null
+echo "== kernel log (oom/kill/lowmem), if readable:"; { sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null; } | grep -i -E "oom|out of memory|killed process|lowmem|mali|segfault" | tail -8
 printf '%s' "$SAVED" | while IFS== read -r g v; do [ -n "$g" ] && [ -n "$v" ] && setgov "$g" "$v"; done
 echo "== mcpe exited with code $RC"
 if [ $RC -eq 1 ]; then
