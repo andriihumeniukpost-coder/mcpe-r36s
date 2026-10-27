@@ -81,6 +81,7 @@ static void log_once(const char *kind, const char *name, const char *sig) {
 }
 
 static int which_dir;
+extern volatile int host_screen_w, host_screen_h;   /* set by main.c (window drawable size) */
 static JV run(meth *m, jvalue *a) {
     JV r; memset(&r, 0, sizeof r);
     const char *n = m->name;
@@ -92,10 +93,17 @@ static JV run(meth *m, jvalue *a) {
     else if (!strcmp(n, "getNumCores")) { long c = sysconf(_SC_NPROCESSORS_ONLN); r.i = c > 0 ? (int)c : 4; }
     else if (!strcmp(n, "getTotalMemory")) { FILE *f = fopen("/proc/meminfo", "r"); long kb = 1000000; if (f) { char l[128]; while (fgets(l, sizeof l, f)) if (sscanf(l, "MemTotal: %ld", &kb) == 1) break; fclose(f); } r.j = (long long)kb * 1024; }
     else if (!strcmp(n, "getExternalStoragePath")) { r.l = mkstr(getenv("MCPE_DATADIR")); }
+    else if (!strcmp(n, "getScreenWidth")) r.i = host_screen_w ? host_screen_w : 640;
+    else if (!strcmp(n, "getScreenHeight")) r.i = host_screen_h ? host_screen_h : 480;
+    else if (!strcmp(n, "getPixelsPerMillimeter")) r.f = 5.0f;
+    else if (!strcmp(n, "supportsNonTouchscreen")) r.z = 1;
+    else if (!strcmp(n, "isTouchscreen")) r.z = 0;
+    else if (!strcmp(n, "hasBuyButtonWhenInvalidLicense")) r.z = 0;
+    else if (!strcmp(n, "getExternalStorageDirectory")) { which_dir = 2; }
     else if (!strcmp(n, "getFilesDir")) { which_dir = 0; }
     else if (!strcmp(n, "getCacheDir")) { which_dir = 1; }
     else if (!strcmp(n, "getPath") || !strcmp(n, "getAbsolutePath")) {
-        char b[1300]; snprintf(b, sizeof b, "%s%s", getenv("MCPE_DATADIR") ? getenv("MCPE_DATADIR") : "", which_dir ? "/cache" : "/files"); r.l = mkstr(b); }
+        char b[1300]; snprintf(b, sizeof b, "%s%s", getenv("MCPE_DATADIR") ? getenv("MCPE_DATADIR") : "", which_dir == 2 ? "" : which_dir ? "/cache" : "/files"); r.l = mkstr(b); }
     else if (!strcmp(n, "getKeyFromKeyCode")) r.i = 0;
     else if (!strcmp(n, "getUserInputString")) { jobj *o = mk(K_OBJARR, "[Ljava/lang/String;"); o->len = 0; r.l = (jobject)o; }
     /* Calls that are pure UI side effects: ignore silently */
@@ -103,6 +111,7 @@ static JV run(meth *m, jvalue *a) {
              !strcmp(n, "updateTextboxText") || !strcmp(n, "setIsPowerVR") || !strcmp(n, "saveScreenshot") ||
              !strcmp(n, "pickImage") || !strcmp(n, "startActivity") || !strcmp(n, "updateLocalization") ||
              !strcmp(n, "setEnvironment") || !strcmp(n, "queryProducts") || !strcmp(n, "LogCLL") ||
+             !strcmp(n, "tick") || !strcmp(n, "quit") || !strcmp(n, "vibrate") || !strcmp(n, "checkLicense") ||
              !strcmp(n, "<init>")) { }
     else if (m->sig[strlen(m->sig) - 1] == ';' && strstr(m->sig, "Ljava/lang/String;") && strchr(m->sig, ')') && !strcmp(strchr(m->sig, ')') + 1, "Ljava/lang/String;")) {
         log_once("string-method", n, m->sig); r.l = mkstr("");

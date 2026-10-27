@@ -41,3 +41,9 @@ GitHub Actions (`.github/workflows/build.yml`) собирает в armhf Ubuntu 
 6. Если `libgcc_s` не экспортирует нужные `__aeabi_*` — добавить их в `libm_shim.c`.
 
 `include/jni.h`, `jni_md.h` — из OpenJDK (GPLv2 + Classpath Exception), только для сборки.
+
+## Minecraft PE 0.8.1 (экспериментально)
+Положите `minecraft-0-8-1-*.apk` в `mcpe/` (вместо 0.16.0 — лаунчер сам перепакует при смене APK) и запустите `Minecraft.sh`.
+Режим включается автоматически, если в APK нет `libfmod.so`: GLES1.1 эмулируется поверх GLES2 (`src/libgles1.c`), звук идёт через OpenSL buffer queue.
+Управление: левый стик/D-pad — движение, A=Cross, B=Circle(назад), X=Square, Y=Triangle, L1/R1, START/SELECT;
+правый стик — указатель для меню (A = клик) или обзор; **R3 переключает** указатель/обзор. L3+R3 — оверлей, SELECT+L1/R1 — масштаб рендера.

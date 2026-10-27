@@ -21,6 +21,9 @@ typedef const SLInterfaceID_ *SLInterfaceID;
 #define IID(name, n) static const SLInterfaceID_ iid_##name = { 0x7e000000u + (n), 0, 0, 0, {0} }; \
                      EXPORT const SLInterfaceID SL_IID_##name = &iid_##name;
 IID(ENGINE, 1) IID(PLAY, 2) IID(ANDROIDSIMPLEBUFFERQUEUE, 3) IID(ANDROIDCONFIGURATION, 4) IID(RECORD, 5) IID(VOLUME, 6)
+/* plain OpenSL ES buffer queue (used by Minecraft PE 0.8.x): same object as the Android simple queue */
+EXPORT const SLInterfaceID SL_IID_BUFFERQUEUE = &iid_ANDROIDSIMPLEBUFFERQUEUE;
+#include <math.h>
 
 /* ------------------------------------------------------ object model */
 enum { K_ENGINE, K_MIX, K_PLAYER };
@@ -66,6 +69,14 @@ typedef struct SLBufferQueueItf_ {
 } SLBufferQueueItf_;
 
 typedef struct SLConfigItf_ { void *SetConfiguration, *GetConfiguration; } SLConfigItf_;
+typedef struct SLVolumeItf_ {
+    SLresult (*SetVolumeLevel)(void *, int16_t);
+    SLresult (*GetVolumeLevel)(void *, int16_t *);
+    SLresult (*GetMaxVolumeLevel)(void *, int16_t *);
+    SLresult (*SetMute)(void *, SLboolean);
+    SLresult (*GetMute)(void *, SLboolean *);
+    void *EnableStereoPosition, *IsEnabledStereoPosition, *SetStereoPosition, *GetStereoPosition;
+} SLVolumeItf_;
 
 /* ------------------------------------------------------------ state */
 #define QMAX 32
@@ -73,7 +84,8 @@ struct Obj {
     const SLObjectItf_ *vt;     /* must be first: this IS the SLObjectItf */
     int kind;
     /* sub-interfaces (each starts with its vtable pointer) */
-    struct { const void *vt; Obj *o; } engine, play, bq, config;
+    struct { const void *vt; Obj *o; } engine, play, bq, config, vol;
+    int16_t vol_mb; int muted;
     /* player state */
     SDL_AudioDeviceID dev;
     int rate, channels;
@@ -100,8 +112,14 @@ static void sdl_fill(void *ud, Uint8 *out, int len) {
         }
     }
     BQCallback cb = p->cb; void *ctx = p->cbctx;
+    int16_t vmb = p->vol_mb, mute = p->muted;
     pthread_mutex_unlock(&p->m);
     if (filled < len) memset(out + filled, 0, len - filled);
+    if (mute) memset(out, 0, filled);
+    else if (vmb < 0) {
+        int g = (int)(65536.0 * pow(10.0, vmb / 2000.0)); int16_t *sm = (int16_t *)out;
+        for (int i = 0; i < filled / 2; i++) sm[i] = (int16_t)(((int)sm[i] * g) >> 16);
+    }
     while (notify-- > 0 && cb) cb(&p->bq, ctx);
 }
 
@@ -147,6 +165,13 @@ static SLresult play_get(void *self, SLuint32 *st) {
 static const SLPlayItf_ play_vt = { .SetPlayState = play_set, .GetPlayState = play_get };
 
 static const SLConfigItf_ config_vt;
+#define VOBJ(self) (((struct { const void *vt; Obj *o; } *)(self))->o)
+static SLresult vol_set(void *s, int16_t mb) { Obj *p = VOBJ(s); pthread_mutex_lock(&p->m); p->vol_mb = mb > 0 ? 0 : mb; pthread_mutex_unlock(&p->m); return OK; }
+static SLresult vol_get(void *s, int16_t *mb) { *mb = VOBJ(s)->vol_mb; return OK; }
+static SLresult vol_max(void *s, int16_t *mb) { (void)s; *mb = 0; return OK; }
+static SLresult vol_setmute(void *s, SLboolean m) { VOBJ(s)->muted = m ? 1 : 0; return OK; }
+static SLresult vol_getmute(void *s, SLboolean *m) { *m = VOBJ(s)->muted; return OK; }
+static const SLVolumeItf_ vol_vt = { vol_set, vol_get, vol_max, vol_setmute, vol_getmute, 0, 0, 0, 0 };
 
 /* --------------------------------------------------- object interface */
 static SLresult o_realize(void *s, SLboolean a) { (void)s; (void)a; return OK; }
@@ -171,6 +196,7 @@ static SLresult o_getif(void *s, SLInterfaceID id, void *out) {
     if (o->kind == K_PLAYER) {
         if (id == SL_IID_PLAY) { *(void **)out = &o->play; return OK; }
         if (id == SL_IID_ANDROIDSIMPLEBUFFERQUEUE) { *(void **)out = &o->bq; return OK; }
+        if (id == SL_IID_VOLUME) { *(void **)out = &o->vol; return OK; }
         if (id == SL_IID_ANDROIDCONFIGURATION) { *(void **)out = &o->config; return OK; }
     }
     *(void **)out = NULL;
@@ -185,6 +211,7 @@ static Obj *new_obj(int kind) {
     o->play.vt = &play_vt; o->play.o = o;
     o->bq.vt = &bq_vt; o->bq.o = o;
     o->config.vt = &config_vt; o->config.o = o;
+    o->vol.vt = &vol_vt; o->vol.o = o;
     pthread_mutex_init(&o->m, NULL);
     return o;
 }
@@ -209,7 +236,7 @@ static SLresult e_player(void *self, void **out, void *src, void *sink, SLuint32
     want.freq = p->rate; want.format = AUDIO_S16SYS; want.channels = (Uint8)p->channels;
     want.samples = 1024; want.callback = sdl_fill; want.userdata = p;
     p->dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0); /* 0: no format change; SDL converts */
-    if (!p->dev) { fprintf(stderr, "[opensl] SDL_OpenAudioDevice: %s\n", SDL_GetError()); free(p); return 4; }
+    if (!p->dev) { fprintf(stderr, "[opensl] SDL_OpenAudioDevice: %s (player will be silent)\n", SDL_GetError()); *out = p; return OK; }
     SDL_PauseAudioDevice(p->dev, 1);
     fprintf(stderr, "[opensl] player %d Hz, %d ch\n", p->rate, p->channels);
     *out = p;

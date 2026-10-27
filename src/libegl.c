@@ -88,7 +88,7 @@ static const unsigned char *glyph(char c) {
     switch (c) { case '.': return dot; case ':': return colon; case '%': return pct; case '/': return slash; case '-': return dash; case '+': return plus; default: return blank; }
 }
 #define OVW 320
-#define OVH 128
+#define OVH 144
 static unsigned char ov_buf[OVW * OVH * 4];
 static unsigned ov_tex, ov_prog; static int ov_lines_used, ov_dirty = 1, ov_failed, ov_fps_chars;
 static void ov_px(int x, int y, unsigned rgb, int a) { if (x < 0 || y < 0 || x >= OVW || y >= OVH) return; unsigned char *p = ov_buf + (y * OVW + x) * 4; p[0] = rgb >> 16; p[1] = rgb >> 8; p[2] = rgb; p[3] = a; }
@@ -101,8 +101,18 @@ static void ov_text(int line, const char *s, unsigned rgb) {
                 if (pass == 0) ov_px(i * 6 + c + 1, y0 + r + 1, 0, 230); else ov_px(i * 6 + c, y0 + r, rgb, 255); }
         }
 }
+extern volatile int host_cursor[3] __attribute__((weak));   /* x, y, visible (menu pointer for the 0.8.1 port) */
+static void ov_cursor_sprite(void) {                      /* 16x16 arrow in rows 128..143 of the overlay texture */
+    for (int y = 0; y < 16; y++) for (int x = 0; x < 16; x++) {
+        int in = (x <= y * 2 / 3 + 0) && y < 15 && x < 11;
+        int in2 = ((x - 1) <= (y - 1) * 2 / 3) && (y - 1) < 15 && (x - 1) < 11 && x >= 1 && y >= 1;
+        (void)in2;
+        if (in) { int edge = (x == 0) || (x == y * 2 / 3) || y == 14 || x == 10; ov_px(x, 128 + y, edge ? 0x000000 : 0xFFFFFF, 255); }
+    }
+}
 static void ov_build(int mode) {
     memset(ov_buf, 0, sizeof ov_buf);
+    ov_cursor_sprite();
     char t[48]; snprintf(t, sizeof t, "FPS %d", fps_value);
     ov_text(0, t, fps_value >= 50 ? 0x60FF60 : fps_value >= 30 ? 0xFFE040 : 0xFF5050);
     ov_fps_chars = (int)strlen(t); ov_lines_used = 0;
@@ -131,7 +141,9 @@ static void draw_overlay(void) {
     if (now - t0 >= 500) { fps_value = (int)(frames * 1000.0f / (now - t0) + 0.5f); frames = 0; t0 = now;
         if (fcount) { ov_frame_avg = fsum / fcount; ov_frame_worst = fworst; } fsum = fworst = 0; fcount = 0; if (mode) ov_build(mode); }
     if (mode != last_mode) { last_mode = mode; if (mode) ov_build(mode); }
-    if (!mode || ov_failed) return;
+    int cur_vis = (&host_cursor[0]) && host_cursor[2];
+    { static int cinit; if (!cinit) { cinit = 1; ov_cursor_sprite(); ov_dirty = 1; } }
+    if ((!mode && !cur_vis) || ov_failed) return;
     if (!gi) { gi = SDL_GL_GetProcAddress("glGetIntegerv"); en = SDL_GL_GetProcAddress("glEnable"); dis = SDL_GL_GetProcAddress("glDisable"); cm = SDL_GL_GetProcAddress("glColorMask"); ise = SDL_GL_GetProcAddress("glIsEnabled");
         gen_t = SDL_GL_GetProcAddress("glGenTextures"); bind_t = SDL_GL_GetProcAddress("glBindTexture"); teximg = SDL_GL_GetProcAddress("glTexImage2D"); texsub = SDL_GL_GetProcAddress("glTexSubImage2D");
         texpar = SDL_GL_GetProcAddress("glTexParameteri"); actv = SDL_GL_GetProcAddress("glActiveTexture");
@@ -170,8 +182,9 @@ static void draw_overlay(void) {
     use(ov_prog); u1i(uloc(ov_prog, "s"), 0); bindb(0x8892, 0); en_a(0); en_a(1);
     #define QUAD(px, py, pw, ph, u0, v0, u1, v1) do { float x0 = 2.0f * (px) / W - 1, x1 = 2.0f * ((px) + (pw)) / W - 1, y0 = 1 - 2.0f * (py) / H, y1 = 1 - 2.0f * ((py) + (ph)) / H; \
         float q[16] = { x0, y0, u0, v0,  x1, y0, u1, v0,  x0, y1, u0, v1,  x1, y1, u1, v1 }; vap(0, 2, 0x1406, 0, 16, q); vap(1, 2, 0x1406, 0, 16, q + 2); draw(0x0005, 0, 4); } while (0)
-    { const int BS = 4; int cw = ov_fps_chars * 6; QUAD(8, 6, cw * BS, 8 * BS, 0.0f, 0.0f, (float)cw / OVW, 8.0f / OVH); }
-    if (ov_lines_used > 0) { const int S = 2; int rows = ov_lines_used * 8; QUAD(8, 6 + 8 * 4 + 4, OVW * S, rows * S, 0.0f, 8.0f / OVH, 1.0f, (8.0f + rows) / OVH); }
+    if (mode) { const int BS = 4; int cw = ov_fps_chars * 6; QUAD(8, 6, cw * BS, 8 * BS, 0.0f, 0.0f, (float)cw / OVW, 8.0f / OVH); }
+    if (mode && ov_lines_used > 0) { const int S = 2; int rows = ov_lines_used * 8; QUAD(8, 6 + 8 * 4 + 4, OVW * S, rows * S, 0.0f, 8.0f / OVH, 1.0f, (8.0f + rows) / OVH); }
+    if (cur_vis) QUAD(host_cursor[0], host_cursor[1], 24, 24, 0.0f, 128.0f / OVH, 16.0f / OVW, 144.0f / OVH);
     /* ---- restore ---- */
     use(prog);
     for (int i = 0; i < 2; i++) { bindb(0x8892, at[i].buf); vap(i, at[i].size, at[i].type, (unsigned char)at[i].norm, at[i].stride, at[i].ptr); if (at[i].en) en_a(i); else dis_a(i); }
@@ -332,6 +345,10 @@ static void pipe_submit(void) {
     static void (*bfb)(unsigned, unsigned); if (!bfb) bfb = SDL_GL_GetProcAddress("glBindFramebuffer");
     sc_fbo = (int)pp_fbo[n]; if (sc_game_fb == 0) bfb(0x8D40, pp_fbo[n]);
 }
+EXPORT EGLhandle eglGetCurrentDisplay(void) { return (EGLhandle)1; }
+/* GLES1 shim (libGLESv1_CM.so) routes viewport/scissor through here so render-scale keeps working */
+EXPORT void shim_gl_viewport(int x, int y, int w, int h) { if (!r_glViewport) r_glViewport = SDL_GL_GetProcAddress("glViewport"); w_glViewport(x, y, w, h); }
+EXPORT void shim_gl_scissor(int x, int y, int w, int h) { if (!r_glScissor) r_glScissor = SDL_GL_GetProcAddress("glScissor"); w_glScissor(x, y, w, h); }
 EXPORT int eglSwapBuffers(EGLhandle d, EGLhandle s) {
     static int n; (void)d; (void)s;
     ld();

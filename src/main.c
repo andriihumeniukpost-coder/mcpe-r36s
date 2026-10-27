@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <libgen.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -474,6 +475,89 @@ static void *prof_thread(void *arg) {
     return NULL;
 }
 
+/* ------------------------------------------------ 0.8.1 ("Xperia Play") input mode
+ * Old builds only know touch plus the Xperia Play hardware: d-pad keys for movement, face buttons as keys and a
+ * touchpad (source 0x100008) for looking around.  We map: left stick / d-pad -> d-pad keys, right stick -> touchpad
+ * look, or (cursor mode, toggled with R3) a mouse-like pointer for the menus where A clicks. */
+volatile int host_screen_w = 640, host_screen_h = 480;
+static int legacy;                       /* 1 when running the old GLES1 build (no libfmod.so) */
+static int cur_mode = 1;                 /* 1 = pointer for menus, 0 = right stick looks around */
+static float lx, ly, rx, ry;
+static int dpbits[4], stbits[4], keyst[4];   /* up, down, left, right */
+static int look_down, cur_press;
+static float cur_fx = 320, cur_fy = 240;
+static void send_pointer(int source, int action, float x, float y) {
+    AInputEvent e; memset(&e, 0, sizeof e);
+    e.type = EV_MOTION; e.source = source; e.device = 2;
+    e.action = action; e.pointer_count = 1; e.pointer_id[0] = 0;
+    e.x[0] = x; e.y[0] = y;
+    queue_push(queue, &e);
+}
+static void legacy_dir_sync(void) {
+    static const int kc[4] = { 19, 20, 21, 22 };
+    for (int i = 0; i < 4; i++) { int on = dpbits[i] || stbits[i]; if (on != keyst[i]) { keyst[i] = on; send_key(on ? 0 : 1, kc[i]); } }
+}
+static void legacy_set_cursor_mode(int m) {
+    cur_mode = m; host_cursor[2] = m;
+    if (!m && cur_press) { cur_press = 0; send_pointer(0x00001002, 1, cur_fx, cur_fy); }
+    if (m) { if (look_down) { look_down = 0; send_pointer(0x00100008, 1, 482, 180); } }
+    fprintf(stderr, "[pad] right stick: %s\n", m ? "pointer (menus)" : "look");
+}
+static void legacy_axis(int axis, int value) {
+    float v = value / 32767.0f; if (v > -0.18f && v < 0.18f) v = 0;
+    switch (axis) {
+        case SDL_CONTROLLER_AXIS_LEFTX: lx = v; stbits[2] = v < -0.5f; stbits[3] = v > 0.5f; break;
+        case SDL_CONTROLLER_AXIS_LEFTY: ly = v; stbits[0] = v < -0.5f; stbits[1] = v > 0.5f; break;
+        case SDL_CONTROLLER_AXIS_RIGHTX: rx = v; break;
+        case SDL_CONTROLLER_AXIS_RIGHTY: ry = v; break;
+    }
+    legacy_dir_sync();
+}
+static void legacy_button(int b, int dn) {
+    int kc = 0;
+    switch (b) {
+        case SDL_CONTROLLER_BUTTON_A:
+            if (cur_mode) { cur_press = dn; send_pointer(0x00001002, dn ? 0 : 1, cur_fx, cur_fy); return; }
+            kc = 23; break;                                      /* Cross = DPAD_CENTER */
+        case SDL_CONTROLLER_BUTTON_B: kc = 4; break;             /* Circle = BACK */
+        case SDL_CONTROLLER_BUTTON_X: kc = 99; break;            /* Square */
+        case SDL_CONTROLLER_BUTTON_Y: kc = 100; break;           /* Triangle */
+        case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: kc = 102; break;
+        case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: kc = 103; break;
+        case SDL_CONTROLLER_BUTTON_START: kc = 108; break;
+        case SDL_CONTROLLER_BUTTON_BACK: kc = 109; break;
+        case SDL_CONTROLLER_BUTTON_GUIDE: kc = 82; break;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP: dpbits[0] = dn; legacy_dir_sync(); return;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN: dpbits[1] = dn; legacy_dir_sync(); return;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT: dpbits[2] = dn; legacy_dir_sync(); return;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: dpbits[3] = dn; legacy_dir_sync(); return;
+        default: return;
+    }
+    send_key(dn ? 0 : 1, kc);
+}
+static void legacy_tick(void) {
+    static Uint32 last; Uint32 now = SDL_GetTicks();
+    if (!legacy || now - last < 14) return;
+    float dt = (now - last) / 1000.0f; if (dt > 0.1f) dt = 0.1f; last = now;
+    if (cur_mode) {
+        if (rx != 0 || ry != 0) {
+            float sp = 420.0f;                                   /* px per second at full deflection */
+            cur_fx += rx * fabsf(rx) * sp * dt; cur_fy += ry * fabsf(ry) * sp * dt;
+            if (cur_fx < 0) cur_fx = 0; if (cur_fy < 0) cur_fy = 0;
+            if (cur_fx > host_screen_w - 1) cur_fx = (float)(host_screen_w - 1); if (cur_fy > host_screen_h - 1) cur_fy = (float)(host_screen_h - 1);
+            host_cursor[0] = (int)cur_fx; host_cursor[1] = (int)cur_fy;
+            send_pointer(0x00001002, 2, cur_fx, cur_fy);
+        }
+    } else {
+        static float kx = -1, ky = -1;
+        if (kx < 0) { const char *a = getenv("MCPE_LOOKX"), *b2 = getenv("MCPE_LOOKY"); kx = a ? (float)atof(a) : 40.0f; ky = b2 ? (float)atof(b2) : 15.0f; }
+        if (rx != 0 || ry != 0) {
+            if (!look_down) { look_down = 1; send_pointer(0x00100008, 0, 482, 180); }
+            send_pointer(0x00100008, 2, 482 + rx * kx, 180 + ry * ky);
+        } else if (look_down) { look_down = 0; send_pointer(0x00100008, 1, 482, 180); }
+    }
+}
+
 int main(int argc, char **argv) {
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
@@ -515,6 +599,8 @@ int main(int argc, char **argv) {
     if (!win) { fprintf(stderr, "[host] window: %s\n", SDL_GetError()); return 1; }
     SDL_GLContext ctx = SDL_GL_CreateContext(win);
     if (!ctx) { fprintf(stderr, "[host] GLES2 context: %s\n", SDL_GetError()); return 1; }
+    { int w = 640, h = 480; SDL_GL_GetDrawableSize(win, &w, &h); host_screen_w = w; host_screen_h = h; host_cursor[0] = w / 2; host_cursor[1] = h / 2; cur_fx = (float)w / 2; cur_fy = (float)h / 2;
+      fprintf(stderr, "[host] drawable %dx%d\n", w, h); }
     fprintf(stderr, "[host] GL_RENDERER: %s\n", "(see glGetString in game log)");
     SDL_GL_MakeCurrent(win, NULL); /* the game's render thread will bind it */
 
@@ -525,7 +611,7 @@ int main(int argc, char **argv) {
     void *hlog = open_lib("liblog.so", RTLD_NOW | RTLD_LOCAL);
     void *hand = open_lib("libandroid.so", RTLD_NOW | RTLD_LOCAL);
     void *hegl = open_lib("libEGL.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("libGLESv1_CM.so", RTLD_NOW | RTLD_LOCAL);
+    void *hgl1 = open_lib("libGLESv1_CM.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
     void *hsl = open_lib("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libz.so", RTLD_NOW | RTLD_LOCAL);
@@ -541,8 +627,17 @@ int main(int argc, char **argv) {
     }
     char fmodpath[1300];
     snprintf(fmodpath, sizeof fmodpath, "%s/libfmod.so", libdir);
-    ElfLib *fmod = elf_load(fmodpath, "libfmod.so");
-    if (!fmod) { fprintf(stderr, "[host] cannot load libfmod.so\n"); return 1; }
+    ElfLib *fmod = NULL;
+    legacy = access(fmodpath, R_OK) != 0;                   /* old builds (0.8.x) have no FMOD: GLES1 + OpenSL buffer queue */
+    if (legacy) {
+        char p[1300]; snprintf(p, sizeof p, "%s/libGLESv1_CM.so", libdir);
+        elf_add_resolver(hgl1, p);
+        host_cursor[2] = 1;
+        fprintf(stderr, "[host] no libfmod.so -> legacy (0.8.x) mode: GLES1 shim, Xperia-style input\n");
+    } else {
+        fmod = elf_load(fmodpath, "libfmod.so");
+        if (!fmod) { fprintf(stderr, "[host] cannot load libfmod.so\n"); return 1; }
+    }
 
     *(void **)need(hegl, "shim_egl_window") = win;
     *(void **)need(hegl, "shim_egl_ctx") = ctx;
@@ -561,9 +656,9 @@ int main(int argc, char **argv) {
     void (*ANativeActivity_onCreate_)(ANativeActivity *, void *, size_t) = elf_sym(game, "ANativeActivity_onCreate");
     if (!ANativeActivity_onCreate_) { fprintf(stderr, "[host] missing symbol ANativeActivity_onCreate\n"); return 1; }
     /* Android's linker runs constructors on load; JNI_OnLoad on System.loadLibrary */
-    elf_run_init(fmod, argc, argv, environ);
+    if (fmod) elf_run_init(fmod, argc, argv, environ);
     elf_run_init(game, argc, argv, environ);
-    jint (*fmod_onload)(JavaVM *, void *) = elf_sym(fmod, "JNI_OnLoad");
+    jint (*fmod_onload)(JavaVM *, void *) = fmod ? elf_sym(fmod, "JNI_OnLoad") : NULL;
     fprintf(stderr, "[host] calling JNI_OnLoad (fmod=%p game=%p)\n", fmod_onload, JNI_OnLoad_);
     if (fmod_onload) { fprintf(stderr, "[host] fmod JNI_OnLoad...\n"); fmod_onload(fake_vm(), NULL); fprintf(stderr, "[host] fmod JNI_OnLoad returned\n"); }
     if (JNI_OnLoad_) { fprintf(stderr, "[host] game JNI_OnLoad...\n"); JNI_OnLoad_(fake_vm(), NULL); }
@@ -600,6 +695,7 @@ int main(int argc, char **argv) {
     int running = 1; int dpad[4] = {0}; float stick[2] = {0}; Uint32 last_tick = SDL_GetTicks();
     while (running && !*finish) {
         SDL_Event ev;
+        legacy_tick();
         int got = SDL_WaitEventTimeout(&ev, 16);
         if (!got) continue;
         do {
@@ -614,11 +710,11 @@ int main(int argc, char **argv) {
                 case SDL_CONTROLLERBUTTONUP: {
                     { static int n; if (n++ < 150) fprintf(stderr, "[pad] button %d %s\n", ev.cbutton.button, ev.type == SDL_CONTROLLERBUTTONDOWN ? "down" : "up"); }
                     int dn = ev.type == SDL_CONTROLLERBUTTONDOWN, b = ev.cbutton.button;
-                    static int l3, r3;
+                    static int l3, r3, r3combo;
                     if (b == SDL_CONTROLLER_BUTTON_LEFTSTICK) l3 = dn;
-                    if (b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) r3 = dn;
+                    if (b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) { r3 = dn; if (dn) r3combo = 0; else if (legacy && !r3combo) { legacy_set_cursor_mode(!cur_mode); break; } }
                     if ((b == SDL_CONTROLLER_BUTTON_LEFTSTICK || b == SDL_CONTROLLER_BUTTON_RIGHTSTICK) && dn && l3 && r3) {
-                        host_ov_mode = (host_ov_mode + 1) % 3;           /* L3+R3: off -> FPS -> FPS/CPU/GPU/RAM */
+                        r3combo = 1; host_ov_mode = (host_ov_mode + 1) % 3;           /* L3+R3: off -> FPS -> FPS/CPU/GPU/RAM */
                         fprintf(stderr, "[pad] overlay mode %d\n", host_ov_mode); break;
                     }
                     { static int sel; if (b == SDL_CONTROLLER_BUTTON_BACK) sel = dn;
@@ -627,6 +723,7 @@ int main(int argc, char **argv) {
                       if (sel && dn && (b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) {
                           host_hide_idx += b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT ? 1 : -1; if (host_hide_idx < -1) host_hide_idx = -1;
                           fprintf(stderr, "[pad] hide index %d\n", host_hide_idx); break; } }
+                    if (legacy) { if (b != SDL_CONTROLLER_BUTTON_LEFTSTICK && b != SDL_CONTROLLER_BUTTON_RIGHTSTICK) legacy_button(b, dn); break; }
                     if (b == SDL_CONTROLLER_BUTTON_DPAD_UP || b == SDL_CONTROLLER_BUTTON_DPAD_DOWN || b == SDL_CONTROLLER_BUTTON_DPAD_LEFT || b == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
                         /* d-pad is read by the game as HAT axes (not as key events) */
                         static int dp[4];
@@ -639,6 +736,7 @@ int main(int argc, char **argv) {
                     break;
                 }
                 case SDL_CONTROLLERAXISMOTION: {
+                    if (legacy) { if (ev.caxis.axis <= SDL_CONTROLLER_AXIS_RIGHTY) legacy_axis(ev.caxis.axis, ev.caxis.value); break; }
                     int a = map_axis(ev.caxis.axis);
                     { static int n; if (n++ < 150 && (ev.caxis.value > 12000 || ev.caxis.value < -12000)) fprintf(stderr, "[pad] axis %d = %d\n", ev.caxis.axis, ev.caxis.value); }
                     if (ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT || ev.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {

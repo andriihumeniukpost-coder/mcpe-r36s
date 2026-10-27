@@ -23,7 +23,7 @@ jobs:
             echo "== package"
             mkdir -p pkg/mcpe/libs pkg/mcpe/assets pkg/mcpe/data
             cp build/mcpe pkg/mcpe/ && cp build/libs/*.so pkg/mcpe/libs/
-            cp pack/Minecraft.sh pkg/ && echo "Put minecraft-0-16-0.apk into mcpe/ and launch Minecraft.sh" > pkg/mcpe/PUT_APK_HERE.txt
+            cp pack/Minecraft.sh pkg/ && echo "Put the Minecraft PE apk (0.8.1 or 0.16.0) into mcpe/ and launch Minecraft.sh" > pkg/mcpe/PUT_APK_HERE.txt
             (cd pkg && zip -qr ../mcpe-r36s-port.zip .)'
       - uses: actions/upload-artifact@v4
         with: { name: mcpe-r36s-port, path: mcpe-r36s-port.zip }

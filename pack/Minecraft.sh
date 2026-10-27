@@ -30,13 +30,17 @@ echo "== files:"; ls -la "$GAMEDIR" "$GAMEDIR/libs" 2>&1 | head -40
 [ -e /lib/ld-linux-armhf.so.3 ] || [ -e /lib32/ld-linux-armhf.so.3 ] || [ -e /usr/lib/arm-linux-gnueabihf/ld-linux-armhf.so.3 ] \
   || echo "WARNING: no armhf dynamic loader found - 32-bit binaries may not run on this system"
 
-# First run: unpack game files from the APK placed next to the launcher
-if [ ! -f libs/libminecraftpe.so ]; then
-  APK=$(ls "$GAMEDIR"/*.apk 2>/dev/null | head -1)
-  [ -n "$APK" ] || fail "put minecraft-0-16-0.apk into $GAMEDIR"
+# Unpack game files from the APK placed next to the launcher (again whenever the APK is replaced: 0.8.1 <-> 0.16.0)
+APK=$(ls -t "$GAMEDIR"/*.apk 2>/dev/null | head -1)
+APKID=""
+[ -n "$APK" ] && APKID="$(basename "$APK") $(stat -c %s "$APK" 2>/dev/null)"
+if [ ! -f libs/libminecraftpe.so ] || { [ -n "$APK" ] && [ "$(cat libs/.apk 2>/dev/null)" != "$APKID" ]; }; then
+  [ -n "$APK" ] || fail "put the Minecraft PE apk (0.8.1 or 0.16.0) into $GAMEDIR"
   echo "== extracting $APK"
+  rm -f libs/libminecraftpe.so libs/libfmod.so libs/.apk; rm -rf "$GAMEDIR/assets"; mkdir -p libs
   if command -v unzip >/dev/null; then
-    unzip -o -j "$APK" "lib/armeabi-v7a/libminecraftpe.so" "lib/armeabi-v7a/libfmod.so" -d libs || fail "unzip libs failed"
+    unzip -o -j "$APK" "lib/armeabi-v7a/libminecraftpe.so" -d libs || fail "unzip libs failed"
+    unzip -o -j "$APK" "lib/armeabi-v7a/libfmod.so" -d libs >/dev/null 2>&1   # absent in old builds (0.8.x): that is fine
     unzip -o -q "$APK" "assets/*" -d "$GAMEDIR" || fail "unzip assets failed"
   elif command -v python3 >/dev/null; then
     python3 - "$APK" "$GAMEDIR" <<'PY' || fail "python unzip failed"
@@ -54,7 +58,9 @@ PY
   else
     fail "neither unzip nor python3 available - extract the APK on a PC (see README)"
   fi
+  printf '%s' "$APKID" > libs/.apk
 fi
+if [ -f libs/libfmod.so ]; then echo "== game flavour: modern (libfmod present)"; else echo "== game flavour: legacy 0.8.x (no libfmod)"; fi
 [ -f libs/libminecraftpe.so ] || fail "libs/libminecraftpe.so missing"
 
 LIBSYS=""

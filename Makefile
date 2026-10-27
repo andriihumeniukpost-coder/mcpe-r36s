@@ -42,8 +42,12 @@ $(B)/libs/libEGL.so: src/libegl.c | $(B)/libs
 $(B)/libs/libOpenSLES.so: src/libopensles.c | $(B)/libs
 	$(CC) $(CFLAGS) -shared -o $@ $< -Wl,-soname,libOpenSLES.so $(shell $(SDLCFG) --libs) -lpthread
 
+# OpenGL ES 1.1 (fixed-function) emulated on the GLES2 context: needed by old builds (0.8.x) that import gl* directly
+$(B)/libs/libGLESv1_CM.so: src/libgles1.c | $(B)/libs
+	$(CC) $(CFLAGS) -shared -o $@ $< -Wl,-soname,libGLESv1_CM.so $(shell $(SDLCFG) --libs) -lm -ldl
+
 # Empty libraries the game lists in DT_NEEDED
-$(B)/libs/libdl.so $(B)/libs/libGLESv1_CM.so $(B)/libs/libGLESv2.so $(B)/libs/libz.so: | $(B)/libs
+$(B)/libs/libdl.so $(B)/libs/libGLESv2.so $(B)/libs/libz.so: | $(B)/libs
 	echo "" > $(B)/obj/empty.c
 	$(CC) -shared -fPIC -o $@ $(B)/obj/empty.c -Wl,-soname,$(notdir $@)
 
