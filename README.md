@@ -47,3 +47,15 @@ GitHub Actions (`.github/workflows/build.yml`) собирает в armhf Ubuntu 
 Режим включается автоматически, если в APK нет `libfmod.so`: GLES1.1 эмулируется поверх GLES2 (`src/libgles1.c`), звук идёт через OpenSL buffer queue.
 Управление: левый стик/D-pad — движение, A=Cross, B=Circle(назад), X=Square, Y=Triangle, L1/R1, START/SELECT;
 правый стик — указатель для меню (A = клик) или обзор; **R3 переключает** указатель/обзор. L3+R3 — оверлей, SELECT+L1/R1 — масштаб рендера.
+
+## Minecraft Bedrock 1.19.22 (armeabi-v7a) — `Minecraft119.sh` + `mcpe119/`
+Отдельный лаунчер и папка, чтобы 1.2 / 1.1.5 остались рядом. Положите `minecraft-1-19-22-*.apk` в `mcpe119/` и запустите `Minecraft119.sh`
+(при первом запуске из APK достаются `libminecraftpe.so`, `libfmod.so`, `libc++_shared.so` и `assets/`). Лог: `mcpe119/log.txt`.
+
+Что отличается от 0.16/1.2: игра берёт свой `libc++_shared.so` (грузится первым), импортирует `gl*` напрямую (`src/libGLESv2.c` — трамплины
+в `eglGetProcAddress`, т.е. через те же soft-float обёртки), просит контекст OpenGL ES 3.0 (с откатом на 2.0), читает ассеты без копирования в ОЗУ,
+`jni_fake.c` отвечает на Java-вызовы 1.19 (включается только если есть `libc++_shared.so`).
+
+Проверка без железа (qemu-arm + заглушка SDL): `mcpe --loadtest` грузит библиотеки и вызывает `JNI_OnLoad`; `MCPE_LOADTEST_RUN=<сек>` дополнительно
+запускает игровой поток без окна. Статус: на R36S **не запускалось**; в эмуляторе доходит до инициализации графики (`The graphics context was gained`)
+и останавливается на первом вызове OpenGL (в эмуляторе нет GPU).
