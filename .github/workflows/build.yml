@@ -20,10 +20,22 @@ jobs:
             nm -D --defined-only build/libs/libEGL.so | grep -E " (eglGetProcAddress|eglSwapBuffers)$"
             nm -D --defined-only build/libs/libOpenSLES.so | grep -E " (slCreateEngine|SL_IID_ENGINE)$"
             nm -D --defined-only build/libs/libandroid.so | grep -E " (ALooper_pollAll|AInputQueue_getEvent)$"
+            echo "== libGLESv2 trampolines (1.19.x imports gl* directly)"
+            test "$(nm -D --defined-only build/libs/libGLESv2.so | grep -c " T gl")" -ge 80
+            nm -D --defined-only build/libs/libc.so | grep -E " (__strlen_chk|__FD_SET_chk|pthread_atfork)$"
             echo "== package"
             mkdir -p pkg/mcpe/libs pkg/mcpe/assets pkg/mcpe/data
             cp build/mcpe pkg/mcpe/ && cp build/libs/*.so pkg/mcpe/libs/
             cp pack/Minecraft.sh pkg/ && echo "Put the Minecraft PE apk (0.8.1 or 0.16.0) into mcpe/ and launch Minecraft.sh" > pkg/mcpe/PUT_APK_HERE.txt
-            (cd pkg && zip -qr ../mcpe-r36s-port.zip .)'
+            (cd pkg && zip -qr ../mcpe-r36s-port.zip .)
+            echo "== package 1.19.x (Minecraft119.sh + mcpe119/)"
+            mkdir -p pkg119/mcpe119/libs
+            cp build/mcpe pkg119/mcpe119/ && cp build/libs/*.so pkg119/mcpe119/libs/
+            cp pack/Minecraft119.sh pkg119/ && echo "Put the Minecraft 1.19.22 apk (armeabi-v7a) into this folder and launch Minecraft119.sh" > pkg119/mcpe119/PUT_APK_HERE.txt
+            (cd pkg119 && zip -qr ../mcpe119-r36s-port.zip .)'
       - uses: actions/upload-artifact@v4
-        with: { name: mcpe-r36s-port, path: mcpe-r36s-port.zip }
+        with:
+          name: mcpe-r36s-port
+          path: |
+            mcpe-r36s-port.zip
+            mcpe119-r36s-port.zip

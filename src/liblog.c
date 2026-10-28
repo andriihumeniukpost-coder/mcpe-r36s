@@ -20,3 +20,11 @@ EXPORT int __android_log_write(int prio, const char *tag, const char *text) {
     (void)prio;
     return fprintf(stderr, "[%s] %s\n", tag ? tag : "", text);
 }
+
+#include <stdlib.h>
+EXPORT void __android_log_assert(const char *cond, const char *tag, const char *fmt, ...) {
+    fprintf(stderr, "[%s] ASSERT %s: ", tag ? tag : "", cond ? cond : "");
+    if (fmt) { va_list ap; va_start(ap, fmt); vfprintf(stderr, fmt, ap); va_end(ap); }
+    fputc('\n', stderr); fflush(stderr);
+    abort();
+}

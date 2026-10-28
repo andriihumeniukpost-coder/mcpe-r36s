@@ -12,12 +12,13 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <sys/epoll.h>
+#include <sys/mman.h>
 
 volatile int shim_finish_requested;
 
 /* ------------------------------------------------------------ assets */
 struct AAssetManager { char root[512]; };
-typedef struct AAsset { char *buf; int32_t len, pos; } AAsset;
+typedef struct AAsset { int fd; int64_t len, pos; void *map; } AAsset;
 typedef struct AAssetDir { DIR *d; } AAssetDir;
 
 EXPORT AAssetManager *shim_asset_manager_create(const char *root) {
@@ -26,38 +27,56 @@ EXPORT AAssetManager *shim_asset_manager_create(const char *root) {
     return m;
 }
 
+/* Files are NOT read into RAM (1.19 has 300 MB of assets on a 1 GB device): positional reads on an fd, and a
+ * read-only mmap only if the game asks for AAsset_getBuffer(). */
 EXPORT AAsset *AAssetManager_open(AAssetManager *m, const char *name, int mode) {
     { static int n; if (n < 40) { n++; fprintf(stderr, "[android] AAssetManager_open %s\n", name); } }
     (void)mode;
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", m->root, name);
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    struct stat st;
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
     AAsset *a = calloc(1, sizeof *a);
-    a->buf = malloc(n ? n : 1);
-    a->len = (int32_t)fread(a->buf, 1, n, f);
-    fclose(f);
+    a->fd = fd; a->len = st.st_size;
     return a;
 }
-EXPORT void AAsset_close(AAsset *a) { if (a) { free(a->buf); free(a); } }
-EXPORT const void *AAsset_getBuffer(AAsset *a) { return a->buf; }
-EXPORT int32_t AAsset_getLength(AAsset *a) { return a->len; }
-EXPORT int32_t AAsset_getRemainingLength(AAsset *a) { return a->len - a->pos; }
-EXPORT int AAsset_read(AAsset *a, void *dst, size_t n) {
-    size_t left = a->len - a->pos;
-    if (n > left) n = left;
-    memcpy(dst, a->buf + a->pos, n);
-    a->pos += (int32_t)n;
-    return (int)n;
+EXPORT void AAsset_close(AAsset *a) {
+    if (!a) return;
+    if (a->map) munmap(a->map, a->len ? a->len : 1);
+    close(a->fd); free(a);
 }
-EXPORT int32_t AAsset_seek(AAsset *a, int32_t off, int whence) {
-    int32_t p = whence == SEEK_SET ? off : whence == SEEK_CUR ? a->pos + off : a->len + off;
+EXPORT const void *AAsset_getBuffer(AAsset *a) {
+    if (!a->map && a->len > 0) {
+        void *p = mmap(NULL, a->len, PROT_READ, MAP_PRIVATE, a->fd, 0);
+        a->map = p == MAP_FAILED ? NULL : p;
+    }
+    return a->map;
+}
+EXPORT int32_t AAsset_getLength(AAsset *a) { return a->len > 0x7fffffff ? 0x7fffffff : (int32_t)a->len; }
+EXPORT int64_t AAsset_getLength64(AAsset *a) { return a->len; }
+EXPORT int32_t AAsset_getRemainingLength(AAsset *a) { int64_t r = a->len - a->pos; return r > 0x7fffffff ? 0x7fffffff : (int32_t)r; }
+EXPORT int64_t AAsset_getRemainingLength64(AAsset *a) { return a->len - a->pos; }
+EXPORT int AAsset_read(AAsset *a, void *dst, size_t n) {
+    int64_t left = a->len - a->pos;
+    if ((int64_t)n > left) n = (size_t)left;
+    size_t done = 0;
+    while (done < n) {
+        ssize_t r = pread(a->fd, (char *)dst + done, n - done, (off_t)(a->pos + done));
+        if (r < 0) { if (errno == EINTR) continue; return -1; }
+        if (r == 0) break;
+        done += (size_t)r;
+    }
+    a->pos += (int64_t)done;
+    return (int)done;
+}
+EXPORT int64_t AAsset_seek64(AAsset *a, int64_t off, int whence) {
+    int64_t p = whence == SEEK_SET ? off : whence == SEEK_CUR ? a->pos + off : a->len + off;
     if (p < 0 || p > a->len) return -1;
     return a->pos = p;
 }
+EXPORT int32_t AAsset_seek(AAsset *a, int32_t off, int whence) { return (int32_t)AAsset_seek64(a, off, whence); }
 
 EXPORT AAssetDir *AAssetManager_openDir(AAssetManager *m, const char *dir) {
     char path[1024];
@@ -199,6 +218,10 @@ EXPORT SOFT float AMotionEvent_getAxisValue(const AInputEvent *e, int32_t axis, 
 }
 
 /* ------------------------------------------------ window / activity */
+extern volatile int host_screen_w, host_screen_h;      /* set by the launcher (drawable size) */
+EXPORT int32_t ANativeWindow_getWidth(ANativeWindow *w) { (void)w; return host_screen_w ? host_screen_w : 640; }
+EXPORT int32_t ANativeWindow_getHeight(ANativeWindow *w) { (void)w; return host_screen_h ? host_screen_h : 480; }
+EXPORT int32_t AMotionEvent_getButtonState(const AInputEvent *e) { (void)e; return 0; }
 EXPORT int32_t ANativeWindow_setBuffersGeometry(ANativeWindow *w, int32_t a, int32_t b, int32_t c) {
     (void)w; (void)a; (void)b; (void)c;
     return 0;

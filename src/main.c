@@ -581,8 +581,12 @@ int main(int argc, char **argv) {
     { struct sigaction s3; memset(&s3, 0, sizeof s3); s3.sa_sigaction = sigprof; s3.sa_flags = SA_SIGINFO | SA_RESTART; sigaction(SIGPROF, &s3, NULL); }
     host_allow = 0;
     fprintf(stderr, "[host] start, base=%s\n", base);
-    (void)argv;
+    /* "mcpe --loadtest": map, relocate and initialise the game libraries and call JNI_OnLoad without any window,
+     * audio or GPU (used to check a new game version under qemu; see port119/README). */
+    int loadtest = argc > 1 && !strcmp(argv[1], "--loadtest");
+    SDL_Window *win = NULL; SDL_GLContext ctx = NULL;
 
+    if (!loadtest) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "[host] SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -591,19 +595,27 @@ int main(int argc, char **argv) {
     if (gcdb) SDL_GameControllerAddMappingsFromFile(gcdb);
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    int want_es3;
+    { char cp[1300]; snprintf(cp, sizeof cp, "%s/libc++_shared.so", libdir); want_es3 = access(cp, R_OK) == 0; }   /* 1.19.x loads ES3 entry points */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, want_es3 ? 3 : 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
-    SDL_Window *win = SDL_CreateWindow("Minecraft PE", 0, 0, 640, 480,
+    win = SDL_CreateWindow("Minecraft PE", 0, 0, 640, 480,
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
     if (!win) { fprintf(stderr, "[host] window: %s\n", SDL_GetError()); return 1; }
-    SDL_GLContext ctx = SDL_GL_CreateContext(win);
+    ctx = SDL_GL_CreateContext(win);
+    if (!ctx && want_es3) {
+        fprintf(stderr, "[host] ES 3.0 context failed (%s), retrying ES 2.0\n", SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+        ctx = SDL_GL_CreateContext(win);
+    }
     if (!ctx) { fprintf(stderr, "[host] GLES2 context: %s\n", SDL_GetError()); return 1; }
     { int w = 640, h = 480; SDL_GL_GetDrawableSize(win, &w, &h); host_screen_w = w; host_screen_h = h; host_cursor[0] = w / 2; host_cursor[1] = h / 2; cur_fx = (float)w / 2; cur_fy = (float)h / 2;
       fprintf(stderr, "[host] drawable %dx%d\n", w, h); }
     fprintf(stderr, "[host] GL_RENDERER: %s\n", "(see glGetString in game log)");
     SDL_GL_MakeCurrent(win, NULL); /* the game's render thread will bind it */
+    }
 
     /* Shim libraries first, in the order the game lists them */
     void *hc = open_lib("libc.so", RTLD_NOW | RTLD_LOCAL);
@@ -613,14 +625,14 @@ int main(int argc, char **argv) {
     void *hand = open_lib("libandroid.so", RTLD_NOW | RTLD_LOCAL);
     void *hegl = open_lib("libEGL.so", RTLD_NOW | RTLD_LOCAL);
     void *hgl1 = open_lib("libGLESv1_CM.so", RTLD_NOW | RTLD_LOCAL);
-    open_lib("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
+    void *hgl2 = open_lib("libGLESv2.so", RTLD_NOW | RTLD_LOCAL);
     void *hsl = open_lib("libOpenSLES.so", RTLD_NOW | RTLD_LOCAL);
     open_lib("libz.so", RTLD_NOW | RTLD_LOCAL);
     void *hcxx = open_lib("libstdc++.so", RTLD_NOW | RTLD_LOCAL);
     /* symbol lookup order for the Android libs: libm first (float ABI wrappers), then bionic compat, ... */
     {
         struct { void *h; const char *n; } r[] = { { hm, "libm.so" }, { hc, "libc.so" }, { hlog, "liblog.so" },
-            { hand, "libandroid.so" }, { hegl, "libEGL.so" }, { hsl, "libOpenSLES.so" }, { hcxx, "libstdc++.so" } };
+            { hand, "libandroid.so" }, { hegl, "libEGL.so" }, { hsl, "libOpenSLES.so" }, { hcxx, "libstdc++.so" }, { hgl2, "libGLESv2.so" } };
         for (unsigned i = 0; i < sizeof r / sizeof *r; i++) {
             char p[1300]; snprintf(p, sizeof p, "%s/%s", libdir, r[i].n);
             elf_add_resolver(r[i].h, p);
@@ -640,6 +652,8 @@ int main(int argc, char **argv) {
         if (!fmod) { fprintf(stderr, "[host] cannot load libfmod.so\n"); return 1; }
     }
 
+    /* 1.19.x imports gl* directly: the libGLESv2 shim trampolines into eglGetProcAddress (soft-float wrappers) */
+    { void **gp = dlsym(hgl2, "shim_gl_getproc"); if (gp) *gp = need(hegl, "eglGetProcAddress"); }
     *(void **)need(hegl, "shim_egl_window") = win;
     *(void **)need(hegl, "shim_egl_ctx") = ctx;
     AAssetManager *(*mk_assets)(const char *) = need(hand, "shim_asset_manager_create");
@@ -647,6 +661,15 @@ int main(int argc, char **argv) {
     queue_push = need(hand, "shim_queue_push");
     volatile int *finish = need(hand, "shim_finish_requested");
 
+    /* 1.19.x ships its own C++ runtime (NEEDED libc++_shared.so): load it first so the game's _Z* imports bind to it */
+    ElfLib *cxx = NULL;
+    extern int g_modern;
+    { char cp[1300]; snprintf(cp, sizeof cp, "%s/libc++_shared.so", libdir);
+      if (access(cp, R_OK) == 0) {
+          cxx = elf_load(cp, "libc++_shared.so");
+          if (!cxx) { fprintf(stderr, "[host] cannot load libc++_shared.so\n"); return 1; }
+          g_modern = 1; fprintf(stderr, "[host] libc++_shared.so found -> Minecraft 1.19.x mode\n");
+      } }
     char gamepath[1300];
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
     ElfLib *game = elf_load(gamepath, "libminecraftpe.so");
@@ -657,6 +680,7 @@ int main(int argc, char **argv) {
     void (*ANativeActivity_onCreate_)(ANativeActivity *, void *, size_t) = elf_sym(game, "ANativeActivity_onCreate");
     if (!ANativeActivity_onCreate_) { fprintf(stderr, "[host] missing symbol ANativeActivity_onCreate\n"); return 1; }
     /* Android's linker runs constructors on load; JNI_OnLoad on System.loadLibrary */
+    if (cxx) elf_run_init(cxx, argc, argv, environ);
     if (fmod) elf_run_init(fmod, argc, argv, environ);
     elf_run_init(game, argc, argv, environ);
     jint (*fmod_onload)(JavaVM *, void *) = fmod ? elf_sym(fmod, "JNI_OnLoad") : NULL;
@@ -664,6 +688,7 @@ int main(int argc, char **argv) {
     if (fmod_onload) { fprintf(stderr, "[host] fmod JNI_OnLoad...\n"); fmod_onload(fake_vm(), NULL); fprintf(stderr, "[host] fmod JNI_OnLoad returned\n"); }
     if (JNI_OnLoad_) { fprintf(stderr, "[host] game JNI_OnLoad...\n"); JNI_OnLoad_(fake_vm(), NULL); }
     fprintf(stderr, "[host] JNI_OnLoad done\n");
+    if (loadtest && !getenv("MCPE_LOADTEST_RUN")) { fprintf(stderr, "[host] loadtest finished OK\n"); return 0; }
 
     { pthread_t wt; pthread_create(&wt, NULL, watchdog, NULL); pthread_detach(wt); }
     if (!getenv("MCPE_NOPROF")) { pthread_t pt; pthread_create(&pt, NULL, prof_thread, NULL); pthread_detach(pt); }
@@ -678,7 +703,7 @@ int main(int argc, char **argv) {
     act.callbacks = calloc(1, sizeof *act.callbacks);
     act.vm = fake_vm(); act.env = fake_env(); act.clazz = fake_activity_obj();
     act.internalDataPath = datadir; act.externalDataPath = datadir; act.obbPath = datadir;
-    act.sdkVersion = 21;
+    act.sdkVersion = g_modern ? 28 : 21;
     act.assetManager = mk_assets(assetdir);
     ANativeActivity_onCreate_(&act, NULL, 0);
 
@@ -686,11 +711,17 @@ int main(int argc, char **argv) {
     ANativeActivityCallbacks *cb = act.callbacks;
     if (cb->onStart) cb->onStart(&act);
     if (cb->onResume) cb->onResume(&act);
-    if (cb->onNativeWindowCreated) cb->onNativeWindowCreated(&act, (ANativeWindow *)win);
+    static char fake_window[64];   /* --loadtest has no SDL window; the game only treats the pointer as an opaque handle */
+    if (cb->onNativeWindowCreated) cb->onNativeWindowCreated(&act, (ANativeWindow *)(win ? (void *)win : (void *)fake_window));
     if (cb->onInputQueueCreated) cb->onInputQueueCreated(&act, queue);
     if (cb->onWindowFocusChanged) cb->onWindowFocusChanged(&act, 1);
     fprintf(stderr, "[host] activity started\n");
 
+    if (loadtest) {      /* MCPE_LOADTEST_RUN: let the game thread run headless for a few seconds, then stop */
+        int secs = getenv("MCPE_LOADTEST_RUN") ? atoi(getenv("MCPE_LOADTEST_RUN")) : 5;
+        fprintf(stderr, "[host] headless run for %d s\n", secs); sleep(secs > 0 ? secs : 5);
+        fprintf(stderr, "[host] headless run finished\n"); fflush(stderr); _exit(0);
+    }
     SDL_GameController *pad = NULL;
     { pthread_t th; if (pthread_create(&th, NULL, stats_thread, NULL) == 0) pthread_detach(th); }
     int running = 1; int dpad[4] = {0}; float stick[2] = {0}; Uint32 last_tick = SDL_GetTicks();

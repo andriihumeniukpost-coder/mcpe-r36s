@@ -80,8 +80,37 @@ static void log_once(const char *kind, const char *name, const char *sig) {
     fprintf(stderr, "[jni] %s %s %s\n", kind, name, sig);
 }
 
+int g_modern;                       /* set by main.c when libc++_shared.so is shipped (1.19.x) */
 static int which_dir;
 extern volatile int host_screen_w, host_screen_h;   /* set by main.c (window drawable size) */
+static const char *ret_type(const meth *m) { const char *p = strchr(m->sig, ')'); return p ? p + 1 : ""; }
+static long long total_mem(void) { FILE *f = fopen("/proc/meminfo", "r"); long kb = 1000000; if (f) { char l[128]; while (fgets(l, sizeof l, f)) if (sscanf(l, "MemTotal: %ld", &kb) == 1) break; fclose(f); } return (long long)kb * 1024; }
+/* Answers for the Java helpers of Minecraft 1.19.x (MainActivity & friends). Returns 1 when handled. */
+static int modern_call(meth *m, jvalue *a, JV *r) {
+    const char *n = m->name, *rt = ret_type(m); const char *dd = getenv("MCPE_DATADIR"); dd = dd ? dd : "";
+    (void)a;
+    if (!strcmp(n, "getAndroidVersion")) { if (rt[0] == 'I') r->i = 28; else r->l = mkstr("9"); return 1; }
+    if (!strcmp(n, "getDisplayWidth")) { r->i = host_screen_w ? host_screen_w : 640; return 1; }
+    if (!strcmp(n, "getDisplayHeight")) { r->i = host_screen_h ? host_screen_h : 480; return 1; }
+    if (!strcmp(n, "getMemoryLimit") || !strcmp(n, "getTotalMemory")) { r->j = total_mem(); return 1; }
+    if (!strcmp(n, "getFreeMemory") || !strcmp(n, "getUsedMemory")) { r->j = total_mem() / 2; return 1; }
+    if (!strcmp(n, "getDeviceModel") || !strcmp(n, "getDeviceModelName")) { r->l = mkstr("R36S"); return 1; }
+    if (!strcmp(n, "getCPUType")) { r->l = mkstr("armeabi-v7a"); return 1; }
+    if (!strcmp(n, "getCPUName")) { r->l = mkstr("ARM Cortex-A35"); return 1; }
+    if (!strcmp(n, "getCPUFeatures")) { r->l = mkstr("neon vfpv4"); return 1; }
+    if (!strcmp(n, "getBoard")) { r->l = mkstr("rk3326"); return 1; }
+    if (!strcmp(n, "getLocale")) { r->l = mkstr("en_US"); return 1; }
+    if (!strcmp(n, "getInternalStoragePath") || !strcmp(n, "getLegacyExternalStoragePath") || !strcmp(n, "getExternalStoragePath")) { r->l = mkstr(dd); return 1; }
+    if (!strcmp(n, "hasWriteExternalStoragePermission") || !strcmp(n, "getLegacyExternalStorageReadable_debug") ||
+        !strcmp(n, "getLegacyExternalStorageDirWritable_debug") || !strcmp(n, "getLegacyExternalStorageGameFolderWritable_debug") ||
+        !strcmp(n, "getLegacyExternalStorageGameFolderReadable_debug")) { r->z = 1; return 1; }
+    if (!strcmp(n, "getLegacyExternalStorage_debug")) { r->l = mkstr(dd); return 1; }
+    /* any other helper that returns a Java object (but not String/array): hand back a fake instance, never NULL */
+    if (rt[0] == 'L' && strcmp(rt, "Ljava/lang/String;") && strncmp(rt, "Ljava/lang/Class", 16) && strcmp(n, "getClassLoader") && strcmp(n, "loadClass") && strcmp(n, "findClass")) {
+        char *cn = strdup(rt + 1); cn[strlen(cn) - 1] = 0; r->l = (jobject)mk(K_OBJ, cn); return 1;
+    }
+    return 0;
+}
 static JV run(meth *m, jvalue *a) {
     JV r; memset(&r, 0, sizeof r);
     const char *n = m->name;
@@ -89,6 +118,13 @@ static JV run(meth *m, jvalue *a) {
     if (!strcmp(n, "getDateString")) { char b[64]; time_t t = time(NULL); strftime(b, sizeof b, "%Y-%m-%d", localtime(&t)); r.l = mkstr(b); }
     else if (!strcmp(n, "getImageData") && a[0].l) r.l = java_getImageData(((jobj *)a[0].l)->str);
     else if (!strcmp(n, "getFileDataBytes") && a[0].l) r.l = java_getFileDataBytes(((jobj *)a[0].l)->str);
+    else if (g_modern && modern_call(m, a, &r)) { }
+    /* 1.19.x resolves its Java classes through the activity's ClassLoader */
+    else if (!strcmp(n, "getClassLoader")) r.l = (jobject)mk(K_OBJ, "java/lang/ClassLoader");
+    else if ((!strcmp(n, "loadClass") || !strcmp(n, "findClass")) && a[0].l) {
+        char *cn = strdup(((jobj *)a[0].l)->str); for (char *c = cn; *c; c++) if (*c == '.') *c = '/';
+        r.l = (jobject)mk(K_CLASS, cn);
+    }
     else if (!strcmp(n, "isNetworkEnabled")) r.z = 0;
     else if (!strcmp(n, "getNumCores")) { long c = sysconf(_SC_NPROCESSORS_ONLN); r.i = c > 0 ? (int)c : 4; }
     else if (!strcmp(n, "getTotalMemory")) { FILE *f = fopen("/proc/meminfo", "r"); long kb = 1000000; if (f) { char l[128]; while (fgets(l, sizeof l, f)) if (sscanf(l, "MemTotal: %ld", &kb) == 1) break; fclose(f); } r.j = (long long)kb * 1024; }
@@ -185,7 +221,7 @@ static jobject J_GetObjectArrayElement(JNIEnv *e, jobjectArray a, jsize i) { (vo
 static void J_SetObjectArrayElement(JNIEnv *e, jobjectArray a, jsize i, jobject v) { (void)e; ((jobject *)((jobj *)a)->data)[i] = v; }
 
 static jfieldID J_GetFieldID(JNIEnv *e, jclass c, const char *n, const char *s) { return (jfieldID)J_GetMethodID(e, c, n, s); }
-static jint J_GetStaticIntField(JNIEnv *e, jclass c, jfieldID f) { (void)e; (void)c; return !strcmp(((meth *)f)->name, "SDK_INT") ? 21 : 0; }
+static jint J_GetStaticIntField(JNIEnv *e, jclass c, jfieldID f) { (void)e; (void)c; return !strcmp(((meth *)f)->name, "SDK_INT") ? (g_modern ? 28 : 21) : 0; }
 static jobject J_GetStaticObjectField(JNIEnv *e, jclass c, jfieldID f) {
     (void)e; (void)c;
     const char *n = ((meth *)f)->name;

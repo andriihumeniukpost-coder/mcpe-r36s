@@ -56,6 +56,15 @@ EXPORT void bc_abort(void) {
 
 /* ---------------------------------------------------- basic data */
 EXPORT int *__errno(void) { return __errno_location(); }
+/* Bionic exports pthread_atfork; glibc only has it in libc_nonshared.a (not visible to dlsym). We never fork. */
+EXPORT int pthread_atfork(void (*a)(void), void (*b)(void), void (*c)(void)) { (void)a; (void)b; (void)c; return 0; }
+/* _FORTIFY_SOURCE helpers the 1.19 build imports (the size argument is only used for the abort check) */
+EXPORT size_t __strlen_chk(const char *s, size_t n) { (void)n; return strlen(s); }
+EXPORT char *__strchr_chk(const char *s, int c, size_t n) { (void)n; return strchr(s, c); }
+EXPORT char *__strncpy_chk2(char *d, const char *s, size_t n, size_t dl, size_t sl) { (void)dl; (void)sl; return strncpy(d, s, n); }
+EXPORT void __FD_SET_chk(int fd, void *set, size_t sz) { (void)sz; ((unsigned long *)set)[fd / 32] |= 1ul << (fd % 32); }
+EXPORT void __FD_CLR_chk(int fd, void *set, size_t sz) { (void)sz; ((unsigned long *)set)[fd / 32] &= ~(1ul << (fd % 32)); }
+EXPORT int __FD_ISSET_chk(int fd, const void *set, size_t sz) { (void)sz; return (((const unsigned long *)set)[fd / 32] >> (fd % 32)) & 1; }
 EXPORT uintptr_t __stack_chk_guard = 0x5ca1ab1e;
 EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected\n"); _exit(134); }
 EXPORT void __google_potentially_blocking_region_begin(void) {}

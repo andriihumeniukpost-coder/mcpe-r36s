@@ -23,6 +23,8 @@ typedef int EGLint;
 EXPORT EGLhandle eglGetDisplay(EGLhandle d) { (void)d; return (EGLhandle)1; }
 EXPORT int eglInitialize(EGLhandle d, EGLint *maj, EGLint *min) { (void)d; if (maj) *maj = 1; if (min) *min = 4; return EGL_TRUE; }
 EXPORT int eglTerminate(EGLhandle d) { (void)d; return EGL_TRUE; }
+EXPORT int eglGetError(void) { return 0x3000; /* EGL_SUCCESS */ }
+EXPORT int eglWaitClient(void) { return EGL_TRUE; }
 EXPORT const char *eglQueryString(EGLhandle d, EGLint n) { (void)d; (void)n; return ""; }
 EXPORT int eglChooseConfig(EGLhandle d, const EGLint *attr, EGLhandle *cfgs, EGLint size, EGLint *num) {
     (void)d; (void)attr;
@@ -536,6 +538,8 @@ static int hb_compute_plain(unsigned pr) {
     return hb_npsh[pr] > 0;
 }
 static int hb_void_skip = 1;
+extern int g_modern __attribute__((weak));   /* set by the launcher for 1.19.x */
+static int hb_void_on(void) { return hb_void_skip && !((&g_modern) && g_modern); }
 static void hb_state(const char *tag) {
     static unsigned char (*ise)(unsigned); static void (*gi)(unsigned, int *), (*gb)(unsigned, unsigned char *); if (!ise) { ise = SDL_GL_GetProcAddress("glIsEnabled"); gi = SDL_GL_GetProcAddress("glGetIntegerv"); gb = SDL_GL_GetProcAddress("glGetBooleanv"); }
     if (!ise || !gi || !gb) return; int df = 0, vpv[4]; unsigned char dm = 0; gi(0x0B74, &df); gb(0x0B72, &dm); gi(0x0BA2, vpv);
@@ -553,8 +557,8 @@ static int gx_skip(int c) {
     int e = (&host_exp) ? host_exp : 0; int cls = gx_blend ? 1 : (ft_cur < PC_N && hb_at[ft_cur]) ? 2 : 0; gx_st[cls][0]++; gx_st[cls][1] += c;
     return (e == 1 && cls == 1) || (e == 2 && cls == 2);
 }
-SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawArrays(m, f, c); }
-SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_skip && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawElements(m, c, t, p); }
+SOFT static void w_glDrawArrays(unsigned m, int f, int c) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_on() && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawArrays(m, f, c); }
+SOFT static void w_glDrawElements(unsigned m, int c, unsigned t, const void *p) { int k = hb_slot(); if (k >= 0) { hb_dr[k]++; hb_vt[k] += c; } if (gx_skip(c)) return; if (hb_hide && ft_cur == hb_hide) { hb_state_log(); return; } if (hb_void_on() && c == 30 && ft_cur < PC_N && hb_plain[ft_cur]) { static int n; if (n++ < 3) fprintf(stderr, "[void] skipping dark horizon plane draw (prog %u)\n", ft_cur); hb_state_log_v(); return; } r_glDrawElements(m, c, t, p); }
 static void hb_frame_end(void) {
     { static int fr; static const char *nm[3] = {"opaque", "blend", "atest"}; if (++fr % 300 == 0) { fprintf(stderr, "[mix] exp=%d per-frame:", (&host_exp) ? host_exp : 0); for (int i = 0; i < 3; i++) fprintf(stderr, " %s %u draws %u verts;", nm[i], gx_st[i][0] / 300, gx_st[i][1] / 300); fprintf(stderr, "\n"); }
       if (fr % 300 == 0) memset(gx_st, 0, sizeof gx_st); }
