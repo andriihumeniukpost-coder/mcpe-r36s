@@ -99,6 +99,11 @@ static JV run(meth *m, jvalue *a) {
     else if (!strcmp(n, "supportsNonTouchscreen")) r.z = 1;
     else if (!strcmp(n, "isTouchscreen")) r.z = 0;
     else if (!strcmp(n, "hasBuyButtonWhenInvalidLicense")) r.z = 0;
+    /* MCPE 1.2+: the native Store asks Java whether the license is valid (Store.hasVerifiedLicense) and fetches extra data about it
+     * (Store.getExtraLicenseData). Without a positive answer the game shows "you don't have a license" and quits after OK. */
+    else if (!strcmp(n, "hasVerifiedLicense")) r.z = 1;
+    else if (!strcmp(n, "getExtraLicenseData")) r.l = (jobject)mk(K_OBJ, "com/mojang/minecraftpe/store/ExtraLicenseResponseData");
+    else if (!strcmp(n, "createGooglePlayStore") || !strcmp(n, "createAmazonAppStore")) r.l = (jobject)mk(K_OBJ, "com/mojang/minecraftpe/store/Store");
     else if (!strcmp(n, "getExternalStorageDirectory")) { which_dir = 2; }
     else if (!strcmp(n, "getFilesDir")) { which_dir = 0; }
     else if (!strcmp(n, "getCacheDir")) { which_dir = 1; }
