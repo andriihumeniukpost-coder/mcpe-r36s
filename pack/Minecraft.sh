@@ -95,11 +95,19 @@ echo "== starting"; sync
     sleep 1
   done ) &
 MEMPID=$!
+# diagnostics: per-core CPU load (%) once per second -> [cpu] lines (core0 core1 core2 core3 ...)
+( prev=$(grep '^cpu[0-9]' /proc/stat)
+  while kill -0 $$ 2>/dev/null; do
+    sleep 1; cur=$(grep '^cpu[0-9]' /proc/stat)
+    echo "[cpu] $(date +%T) $(printf '%s\n%s\n' "$prev" "$cur" | awk '{ if (seen[$1]++) { t=0; for(i=2;i<=NF;i++) t+=$i; idle=$5+$6; dt=t-T[$1]; di=idle-I[$1]; printf "%d ", (dt>0) ? 100*(dt-di)/dt : 0 } else { t=0; for(i=2;i<=NF;i++) t+=$i; T[$1]=t; I[$1]=$5+$6 } }')"
+    prev="$cur"
+  done ) &
+CPUPID=$!
 T0=$(date +%s)
 ./mcpe
 RC=$?
 echo "== mcpe ran for $(( $(date +%s) - T0 )) s"
-kill $MEMPID 2>/dev/null
+kill $MEMPID $CPUPID 2>/dev/null
 echo "== kernel log (oom/kill/lowmem), if readable:"; { sudo -n dmesg 2>/dev/null || dmesg 2>/dev/null; } | grep -i -E "oom|out of memory|killed process|lowmem|mali|segfault" | tail -8
 printf '%s' "$SAVED" | while IFS== read -r g v; do [ -n "$g" ] && [ -n "$v" ] && setgov "$g" "$v"; done
 echo "== mcpe exited with code $RC"
