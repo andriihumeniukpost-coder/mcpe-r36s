@@ -29,15 +29,25 @@ EXPORT AAssetManager *shim_asset_manager_create(const char *root) {
 
 /* Files are NOT read into RAM (1.19 has 300 MB of assets on a 1 GB device): positional reads on an fd, and a
  * read-only mmap only if the game asks for AAsset_getBuffer(). */
+static volatile long st_open, st_fail, st_dir, st_bytes; static char st_last[160], st_lastfail[160], st_lastdir[160];
+static void *st_thread(void *x) {
+    (void)x; long po = -1, pb = -1;
+    for (;;) { sleep(5);
+        if (st_open != po || st_bytes != pb) { po = st_open; pb = st_bytes;
+            fprintf(stderr, "[assets] opened=%ld failed=%ld dirs=%ld read=%ld MB last=%s lastfail=%s lastdir=%s\n", st_open, st_fail, st_dir, st_bytes >> 20, st_last, st_lastfail, st_lastdir); } }
+    return NULL;
+}
 EXPORT AAsset *AAssetManager_open(AAssetManager *m, const char *name, int mode) {
-    { static int n; if (n < 40) { n++; fprintf(stderr, "[android] AAssetManager_open %s\n", name); } }
+    { static int n; if (n < 40) { n++; fprintf(stderr, "[android] AAssetManager_open %s\n", name); }
+      if (!n) n = 1; static int started; if (!started) { started = 1; pthread_t t; if (!pthread_create(&t, NULL, st_thread, NULL)) pthread_detach(t); } }
+    __sync_fetch_and_add(&st_open, 1); snprintf(st_last, sizeof st_last, "%s", name);
     (void)mode;
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", m->root, name);
     int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return NULL;
+    if (fd < 0) { __sync_fetch_and_add(&st_fail, 1); snprintf(st_lastfail, sizeof st_lastfail, "%s", name); { static int nf; if (nf < 200) { nf++; fprintf(stderr, "[android] open FAILED %s\n", name); } } return NULL; }
     struct stat st;
-    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); return NULL; }
+    if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); __sync_fetch_and_add(&st_fail, 1); snprintf(st_lastfail, sizeof st_lastfail, "%s (not a file)", name); return NULL; }
     AAsset *a = calloc(1, sizeof *a);
     a->fd = fd; a->len = st.st_size;
     return a;
@@ -68,7 +78,7 @@ EXPORT int AAsset_read(AAsset *a, void *dst, size_t n) {
         if (r == 0) break;
         done += (size_t)r;
     }
-    a->pos += (int64_t)done;
+    a->pos += (int64_t)done; __sync_fetch_and_add(&st_bytes, (long)done);
     return (int)done;
 }
 EXPORT int64_t AAsset_seek64(AAsset *a, int64_t off, int whence) {
@@ -82,6 +92,8 @@ EXPORT AAssetDir *AAssetManager_openDir(AAssetManager *m, const char *dir) {
     char path[1024];
     snprintf(path, sizeof path, "%s/%s", m->root, dir);
     DIR *d = opendir(path);
+    __sync_fetch_and_add(&st_dir, 1); snprintf(st_lastdir, sizeof st_lastdir, "%s%s", dir, d ? "" : " (MISSING)");
+    { static int nd; if (nd < 150) { nd++; fprintf(stderr, "[android] openDir %s -> %s\n", dir, d ? "ok" : "MISSING"); } }
     AAssetDir *ad = calloc(1, sizeof *ad);
     ad->d = d;
     return ad;
