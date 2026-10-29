@@ -17,6 +17,8 @@ EXPORT void *shim_egl_window;
 EXPORT void *shim_egl_ctx;
 
 typedef void *EGLhandle;
+#include <pthread.h>
+#include <stdint.h>
 typedef int EGLint;
 #define EGL_TRUE 1
 
@@ -45,15 +47,48 @@ EXPORT int eglGetConfigAttrib(EGLhandle d, EGLhandle c, EGLint a, EGLint *v) {
     return EGL_TRUE;
 }
 EXPORT EGLhandle eglCreateWindowSurface(EGLhandle d, EGLhandle c, EGLhandle w, const EGLint *a) { (void)d; (void)c; (void)w; (void)a; return (EGLhandle)2; }
-EXPORT EGLhandle eglCreateContext(EGLhandle d, EGLhandle c, EGLhandle share, const EGLint *a) { (void)d; (void)c; (void)share; (void)a; return shim_egl_ctx ? shim_egl_ctx : (EGLhandle)3; }
+/* 1.19 creates several contexts (render thread + shared loader contexts on other threads). The first one is the SDL context;
+ * the others get placeholder handles and become real EGL contexts shared with it the first time a thread makes them current. */
+static int ctx_count;
+EXPORT EGLhandle eglCreateContext(EGLhandle d, EGLhandle c, EGLhandle share, const EGLint *a) {
+    (void)d; (void)c; (void)a;
+    int k = __sync_fetch_and_add(&ctx_count, 1);
+    fprintf(stderr, "[egl] eglCreateContext #%d share=%p tid=%lu\n", k, (void *)share, (unsigned long)pthread_self());
+    if (k == 0) return shim_egl_ctx ? shim_egl_ctx : (EGLhandle)3;
+    return (EGLhandle)(uintptr_t)(0x100 + k);
+}
 EXPORT int eglDestroyContext(EGLhandle d, EGLhandle c) { (void)d; (void)c; return EGL_TRUE; }
 EXPORT int eglDestroySurface(EGLhandle d, EGLhandle s) { (void)d; (void)s; return EGL_TRUE; }
 static int pipe_on, pipe_tried;
 static void *pp_dpy_g, *pp_ctx0_g; static int (*pp_mk)(void *, void *, void *, void *);
 static int pipe_setup(void *win, void *ctx0);
+static void *sec_real[16]; static pthread_mutex_t sec_mu = PTHREAD_MUTEX_INITIALIZER;
+static void *sec_ctx(EGLhandle h) {
+    unsigned k = (unsigned)((uintptr_t)h - 0x100); if (k >= 16) return pp_ctx0_g;
+    pthread_mutex_lock(&sec_mu);
+    if (!sec_real[k]) {
+        int (*qc)(void *, void *, int, int *) = SDL_GL_GetProcAddress("eglQueryContext");
+        int (*cc)(void *, const int *, void *, int, int *) = SDL_GL_GetProcAddress("eglChooseConfig");
+        void *(*mkc)(void *, void *, void *, const int *) = SDL_GL_GetProcAddress("eglCreateContext");
+        void *cfg = NULL; int id = 0, n = 0, ok = 0;
+        if (qc && cc && mkc && qc(pp_dpy_g, pp_ctx0_g, 0x3028, &id)) { int at[] = { 0x3028, id, 0x3038 }; ok = cc(pp_dpy_g, at, &cfg, 1, &n) && n > 0; }
+        if (ok) { int at[] = { 0x3098, 3, 0x3038 }; sec_real[k] = mkc(pp_dpy_g, cfg, pp_ctx0_g, at); }
+        fprintf(stderr, "[egl] secondary context %u -> %p (cfg id=%d ok=%d)\n", k, sec_real[k], id, ok);
+        if (!sec_real[k]) sec_real[k] = (void *)-1;
+    }
+    void *r = sec_real[k]; pthread_mutex_unlock(&sec_mu);
+    return r == (void *)-1 ? NULL : r;
+}
 EXPORT int eglMakeCurrent(EGLhandle d, EGLhandle draw, EGLhandle read, EGLhandle ctx) {
     (void)d; (void)draw; (void)read;
-    if (pipe_on) return pp_mk(pp_dpy_g, 0, 0, ctx ? pp_ctx0_g : 0) == EGL_TRUE;   /* surfaceless: the game only renders into offscreen targets */
+    static int nlog;
+    if (pipe_on) {
+        void *real = NULL; int ok;
+        if (ctx) real = ((uintptr_t)ctx >= 0x100 && (uintptr_t)ctx < 0x110) ? sec_ctx(ctx) : pp_ctx0_g;
+        ok = (!ctx || real) ? pp_mk(pp_dpy_g, 0, 0, real) == EGL_TRUE : 0;   /* surfaceless: the game only renders into offscreen targets */
+        if (nlog < 40 || !ok) { nlog++; fprintf(stderr, "[egl] MakeCurrent tid=%lu ctx=%p real=%p -> %d\n", (unsigned long)pthread_self(), (void *)ctx, real, ok); }
+        return ok;
+    }
     if (!ctx) return SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, NULL) == 0;
     int ok = SDL_GL_MakeCurrent((SDL_Window *)shim_egl_window, (SDL_GLContext)shim_egl_ctx) == 0;
     if (ok && !pipe_tried) { pipe_tried = 1; pipe_setup(shim_egl_window, shim_egl_ctx); }
