@@ -105,6 +105,15 @@ static int modern_call(meth *m, jvalue *a, JV *r) {
         !strcmp(n, "getLegacyExternalStorageDirWritable_debug") || !strcmp(n, "getLegacyExternalStorageGameFolderWritable_debug") ||
         !strcmp(n, "getLegacyExternalStorageGameFolderReadable_debug")) { r->z = 1; return 1; }
     if (!strcmp(n, "getLegacyExternalStorage_debug")) { r->l = mkstr(dd); return 1; }
+    /* java.util.Arrays.copyOfRange(byte[], from, to): the game slices the signature off its payload before verifying it */
+    if (!strcmp(n, "copyOfRange") && a[0].l && ((jobj *)a[0].l)->kind == K_BYTEARR) {
+        jobj *src = (jobj *)a[0].l; int from = a[1].i, to = a[2].i; if (from < 0) from = 0;
+        jobj *b = mk(K_BYTEARR, "[B"); b->len = to > from ? to - from : 0; b->data = calloc(b->len ? b->len : 1, 1);
+        for (int i = 0; i < b->len && from + i < src->len; i++) ((char *)b->data)[i] = ((char *)src->data)[from + i];
+        r->l = (jobject)b; return 1;
+    }
+    /* java.security.Signature.verify(byte[]) -> boolean: accept (this is a personal port without Mojang/Realms servers) */
+    if (!strcmp(n, "verify") && !strcmp(m->sig, "([B)Z")) { r->z = 1; return 1; }
     /* android.util.Base64.decode(String, int) -> byte[]  (the game decodes a base64 public key before verifying content signatures) */
     if (!strcmp(n, "decode") && a[0].l && ((jobj *)a[0].l)->kind == K_STRING) {
         const char *s = ((jobj *)a[0].l)->str; size_t L = strlen(s); unsigned char *out = malloc(L / 4 * 3 + 4); int o = 0; unsigned acc = 0; int bits = 0;
