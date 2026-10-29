@@ -105,8 +105,26 @@ static int modern_call(meth *m, jvalue *a, JV *r) {
         !strcmp(n, "getLegacyExternalStorageDirWritable_debug") || !strcmp(n, "getLegacyExternalStorageGameFolderWritable_debug") ||
         !strcmp(n, "getLegacyExternalStorageGameFolderReadable_debug")) { r->z = 1; return 1; }
     if (!strcmp(n, "getLegacyExternalStorage_debug")) { r->l = mkstr(dd); return 1; }
-    /* any other helper that returns a Java object (but not String/array): hand back a fake instance, never NULL */
-    if (rt[0] == 'L' && strcmp(rt, "Ljava/lang/String;") && strncmp(rt, "Ljava/lang/Class", 16) && strcmp(n, "getClassLoader") && strcmp(n, "loadClass") && strcmp(n, "findClass")) {
+    /* android.util.Base64.decode(String, int) -> byte[]  (the game decodes a base64 public key before verifying content signatures) */
+    if (!strcmp(n, "decode") && a[0].l && ((jobj *)a[0].l)->kind == K_STRING) {
+        const char *s = ((jobj *)a[0].l)->str; size_t L = strlen(s); unsigned char *out = malloc(L / 4 * 3 + 4); int o = 0; unsigned acc = 0; int bits = 0;
+        for (size_t i = 0; i < L; i++) {
+            int c = s[i], v = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' || c == '-' ? 62 : c == '/' || c == '_' ? 63 : -1;
+            if (v < 0) continue;
+            acc = (acc << 6) | (unsigned)v; bits += 6;
+            if (bits >= 8) { bits -= 8; out[o++] = (unsigned char)(acc >> bits); }
+        }
+        jobj *b = mk(K_BYTEARR, "[B"); b->len = o; b->data = out; r->l = (jobject)b; return 1;
+    }
+    return 0;
+}
+/* last resort for unhandled helpers in 1.19.x: never hand NULL back for objects/arrays (a NULL jarray crashed the host before) */
+static int modern_fallback(meth *m, JV *r) {
+    const char *rt = ret_type(m);
+    if (rt[0] == '[') {
+        jobj *o = mk(rt[1] == 'B' ? K_BYTEARR : rt[1] == 'I' ? K_INTARR : K_OBJARR, strdup(rt)); o->len = 0; o->data = calloc(1, 8); r->l = (jobject)o; return 1;
+    }
+    if (rt[0] == 'L' && strcmp(rt, "Ljava/lang/String;") && strncmp(rt, "Ljava/lang/Class", 16)) {
         char *cn = strdup(rt + 1); cn[strlen(cn) - 1] = 0; r->l = (jobject)mk(K_OBJ, cn); return 1;
     }
     return 0;
@@ -152,6 +170,7 @@ static JV run(meth *m, jvalue *a) {
     else if (m->sig[strlen(m->sig) - 1] == ';' && strstr(m->sig, "Ljava/lang/String;") && strchr(m->sig, ')') && !strcmp(strchr(m->sig, ')') + 1, "Ljava/lang/String;")) {
         log_once("string-method", n, m->sig); r.l = mkstr("");
     }
+    else if (g_modern && modern_fallback(m, &r)) { log_once("method(fake obj)", n, m->sig); }
     else log_once("method", n, m->sig);
     return r;
 }
@@ -210,11 +229,11 @@ static jsize J_GetStringUTFLength(JNIEnv *e, jstring s) { (void)e; return s ? (j
 static jsize J_GetArrayLength(JNIEnv *e, jarray a) { (void)e; return a ? ((jobj *)a)->len : 0; }
 static jintArray J_NewIntArray(JNIEnv *e, jsize n) { (void)e; jobj *o = mk(K_INTARR, "[I"); o->len = n; o->data = calloc(n ? n : 1, 4); return (jintArray)o; }
 static jbyteArray J_NewByteArray(JNIEnv *e, jsize n) { (void)e; jobj *o = mk(K_BYTEARR, "[B"); o->len = n; o->data = calloc(n ? n : 1, 1); return (jbyteArray)o; }
-static void J_GetIntArrayRegion(JNIEnv *e, jintArray a, jsize s, jsize l, jint *b) { (void)e; memcpy(b, (int32_t *)((jobj *)a)->data + s, l * 4); }
+static void J_GetIntArrayRegion(JNIEnv *e, jintArray a, jsize s, jsize l, jint *b) { (void)e; if (!a || !((jobj *)a)->data) return; memcpy(b, (int32_t *)((jobj *)a)->data + s, l * 4); }
 static void J_SetIntArrayRegion(JNIEnv *e, jintArray a, jsize s, jsize l, const jint *b) { (void)e; memcpy((int32_t *)((jobj *)a)->data + s, b, l * 4); }
-static void J_GetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize s, jsize l, jbyte *b) { (void)e; memcpy(b, (char *)((jobj *)a)->data + s, l); }
+static void J_GetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize s, jsize l, jbyte *b) { (void)e; if (!a || !((jobj *)a)->data) return; memcpy(b, (char *)((jobj *)a)->data + s, l); }
 static void J_SetByteArrayRegion(JNIEnv *e, jbyteArray a, jsize s, jsize l, const jbyte *b) { (void)e; memcpy((char *)((jobj *)a)->data + s, b, l); }
-static void *J_GetArrayElements(JNIEnv *e, jarray a, jboolean *c) { (void)e; if (c) *c = 0; return ((jobj *)a)->data; }
+static void *J_GetArrayElements(JNIEnv *e, jarray a, jboolean *c) { (void)e; if (c) *c = 0; return a ? ((jobj *)a)->data : NULL; }
 static void J_ReleaseArrayElements(JNIEnv *e, jarray a, void *p, jint m) { (void)e; (void)a; (void)p; (void)m; }
 static jobjectArray J_NewObjectArray(JNIEnv *e, jsize n, jclass c, jobject init) { (void)e; (void)c; (void)init; jobj *o = mk(K_OBJARR, "[Ljava/lang/Object;"); o->len = n; o->data = calloc(n ? n : 1, sizeof(void *)); return (jobjectArray)o; }
 static jobject J_GetObjectArrayElement(JNIEnv *e, jobjectArray a, jsize i) { (void)e; return ((jobject *)((jobj *)a)->data)[i]; }

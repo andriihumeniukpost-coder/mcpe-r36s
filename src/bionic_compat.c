@@ -56,6 +56,8 @@ EXPORT void bc_abort(void) {
 
 /* ---------------------------------------------------- basic data */
 EXPORT int *__errno(void) { return __errno_location(); }
+EXPORT size_t strlcpy(char *d, const char *s, size_t n) { size_t l = strlen(s); if (n) { size_t c = l >= n ? n - 1 : l; memcpy(d, s, c); d[c] = 0; } return l; }
+EXPORT size_t strlcat(char *d, const char *s, size_t n) { size_t dl = strnlen(d, n), sl = strlen(s); if (dl == n) return n + sl; size_t c = sl >= n - dl ? n - dl - 1 : sl; memcpy(d + dl, s, c); d[dl + c] = 0; return dl + sl; }
 /* Bionic exports pthread_atfork; glibc only has it in libc_nonshared.a (not visible to dlsym). We never fork. */
 EXPORT int pthread_atfork(void (*a)(void), void (*b)(void), void (*c)(void)) { (void)a; (void)b; (void)c; return 0; }
 /* _FORTIFY_SOURCE helpers the 1.19 build imports (the size argument is only used for the abort check) */
