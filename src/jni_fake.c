@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -80,11 +81,24 @@ static void log_once(const char *kind, const char *name, const char *sig) {
     fprintf(stderr, "[jni] %s %s %s\n", kind, name, sig);
 }
 
-int g_modern;                       /* set by main.c when libc++_shared.so is shipped (1.19.x) */
+int g_modern; void *(*g_native_sym)(const char *);
+                      /* set by main.c when libc++_shared.so is shipped (1.19.x) */
 static int which_dir;
 extern volatile int host_screen_w, host_screen_h;   /* set by main.c (window drawable size) */
 static const char *ret_type(const meth *m) { const char *p = strchr(m->sig, ')'); return p ? p + 1 : ""; }
 static long long total_mem(void) { FILE *f = fopen("/proc/meminfo", "r"); long kb = 1000000; if (f) { char l[128]; while (fgets(l, sizeof l, f)) if (sscanf(l, "MemTotal: %ld", &kb) == 1) break; fclose(f); } return (long long)kb * 1024; }
+
+/* Google Play store stand-in: the game waits for NativeStoreListener.onStoreInitialized before it carries on loading. */
+JNIEnv *fake_env(void);
+static void *store_init_thread(void *arg) {
+    jobj *l = arg; usleep(300 * 1000);
+    void (*fn)(JNIEnv *, jobject, long long, unsigned char) = g_native_sym ? g_native_sym("Java_com_mojang_minecraftpe_store_NativeStoreListener_onStoreInitialized") : NULL;
+    if (!fn || !l || !l->data) { fprintf(stderr, "[jni] store: cannot call onStoreInitialized (fn=%p data=%p)\n", (void *)fn, l ? l->data : NULL); return NULL; }
+    fprintf(stderr, "[jni] store: calling onStoreInitialized(ptr=%llx, true)\n", *(long long *)l->data);
+    fn(fake_env(), (jobject)l, *(long long *)l->data, 1);
+    fprintf(stderr, "[jni] store: onStoreInitialized returned\n");
+    return NULL;
+}
 /* Answers for the Java helpers of Minecraft 1.19.x (MainActivity & friends). Returns 1 when handled. */
 static int modern_call(meth *m, jvalue *a, JV *r) {
     const char *n = m->name, *rt = ret_type(m); const char *dd = getenv("MCPE_DATADIR"); dd = dd ? dd : "";
@@ -98,6 +112,11 @@ static int modern_call(meth *m, jvalue *a, JV *r) {
     if (!strcmp(n, "getCPUType")) { r->l = mkstr("armeabi-v7a"); return 1; }
     if (!strcmp(n, "getCPUName")) { r->l = mkstr("ARM Cortex-A35"); return 1; }
     if (!strcmp(n, "getCPUFeatures")) { r->l = mkstr("neon vfpv4"); return 1; }
+    if (!strcmp(n, "createGooglePlayStore")) {
+        jobj *st = mk(K_OBJ, "com/mojang/minecraftpe/store/Store"); r->l = (jobject)st;
+        if (a[1].l) { pthread_t t; if (!pthread_create(&t, NULL, store_init_thread, a[1].l)) pthread_detach(t); }
+        return 1;
+    }
     if (!strcmp(n, "getBoard")) { r->l = mkstr("rk3326"); return 1; }
     if (!strcmp(n, "getLocale")) { r->l = mkstr("en_US"); return 1; }
     if (!strcmp(n, "getInternalStoragePath") || !strcmp(n, "getLegacyExternalStoragePath") || !strcmp(n, "getExternalStoragePath")) { r->l = mkstr(dd); return 1; }
@@ -224,15 +243,22 @@ static void J_DeleteRef(JNIEnv *e, jobject o) { (void)e; (void)o; }
 static jboolean J_False(JNIEnv *e) { (void)e; return 0; }
 static void J_Void(JNIEnv *e) { (void)e; }
 static jobject J_Null(JNIEnv *e) { (void)e; return NULL; }
-static jobject J_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list a) { (void)e; (void)m; (void)a; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
-static jobject J_NewObjectA(JNIEnv *e, jclass c, jmethodID m, const jvalue *a) { (void)e; (void)m; (void)a; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
+/* NativeStoreListener(long nativePtr): remember the pointer, we need it to call back onStoreInitialized */
+static jobject new_obj_for(jclass c, int have, long long ptr) {
+    jobj *o = mk(K_OBJ, ((jobj *)c)->name);
+    if (have && o->name && strstr(o->name, "NativeStoreListener")) { long long *p = malloc(sizeof *p); *p = ptr; o->data = p; }
+    return (jobject)o;
+}
+static jobject J_NewObjectV(JNIEnv *e, jclass c, jmethodID m, va_list a) { (void)e; (void)m; long long p = 0; int h = 0; if (((jobj *)c)->name && strstr(((jobj *)c)->name, "NativeStoreListener")) { p = va_arg(a, long long); h = 1; } return new_obj_for(c, h, p); }
+static jobject J_NewObjectA(JNIEnv *e, jclass c, jmethodID m, const jvalue *a) { (void)e; (void)m; return new_obj_for(c, a != NULL, a ? (long long)a[0].j : 0); }
 static jint J_PushLocalFrame(JNIEnv *e, jint n) { (void)e; (void)n; return 0; }
 static jobject J_PopLocalFrame(JNIEnv *e, jobject r) { (void)e; return r; }
-static jobject J_NewObject(JNIEnv *e, jclass c, jmethodID m, ...) { (void)e; (void)m; return (jobject)mk(K_OBJ, ((jobj *)c)->name); }
+static jobject J_NewObject(JNIEnv *e, jclass c, jmethodID m, ...) { va_list ap; va_start(ap, m); jobject r = J_NewObjectV(e, c, m, ap); va_end(ap); return r; }
 
 static jstring J_NewStringUTF(JNIEnv *e, const char *s) { (void)e; return mkstr(s); }
 static const char *J_GetStringUTFChars(JNIEnv *e, jstring s, jboolean *c) { (void)e; if (c) *c = 0; return s ? ((jobj *)s)->str : ""; }
 static void J_ReleaseStringUTFChars(JNIEnv *e, jstring s, const char *c) { (void)e; (void)s; (void)c; }
+static jsize J_GetStringLength(JNIEnv *e, jstring s) { (void)e; if (!s) return 0; const unsigned char *p = (const unsigned char *)((jobj *)s)->str; jsize n = 0; while (p && *p) { if ((*p & 0xc0) != 0x80) n++; p++; } return n; }
 static jsize J_GetStringUTFLength(JNIEnv *e, jstring s) { (void)e; return s ? (jsize)strlen(((jobj *)s)->str) : 0; }
 
 static jsize J_GetArrayLength(JNIEnv *e, jarray a) { (void)e; return a ? ((jobj *)a)->len : 0; }
@@ -304,7 +330,7 @@ JNIEnv *fake_env(void) {
         iface.CallStaticFloatMethod = (void *)C_Float; iface.CallStaticFloatMethodV = (void *)C_FloatV; iface.CallStaticFloatMethodA = (void *)C_FloatA;
         iface.CallStaticVoidMethod = (void *)C_Void; iface.CallStaticVoidMethodV = (void *)C_VoidV; iface.CallStaticVoidMethodA = (void *)C_VoidA;
         iface.NewStringUTF = J_NewStringUTF; iface.GetStringUTFChars = J_GetStringUTFChars;
-        iface.ReleaseStringUTFChars = J_ReleaseStringUTFChars; iface.GetStringUTFLength = J_GetStringUTFLength;
+        iface.ReleaseStringUTFChars = J_ReleaseStringUTFChars; iface.GetStringUTFLength = J_GetStringUTFLength; iface.GetStringLength = J_GetStringLength;
         iface.GetArrayLength = J_GetArrayLength;
         iface.NewIntArray = J_NewIntArray; iface.NewByteArray = J_NewByteArray;
         iface.GetIntArrayRegion = J_GetIntArrayRegion; iface.SetIntArrayRegion = J_SetIntArrayRegion;

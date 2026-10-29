@@ -559,6 +559,10 @@ static void legacy_tick(void) {
     }
 }
 
+extern void *(*g_native_sym)(const char *);
+static ElfLib *g_game_h;
+static void *native_sym_cb(const char *n) { return elf_sym(g_game_h, n); }
+
 int main(int argc, char **argv) {
     char exe[1024]; ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
     if (n < 0) { perror("readlink"); return 1; }
@@ -676,6 +680,7 @@ int main(int argc, char **argv) {
     if (!game) { fprintf(stderr, "[host] cannot load game\n"); return 1; }
     fprintf(stderr, "[host] libminecraftpe.so loaded\n");
 
+    g_game_h = game; g_native_sym = native_sym_cb;
     jint (*JNI_OnLoad_)(JavaVM *, void *) = elf_sym(game, "JNI_OnLoad");
     void (*ANativeActivity_onCreate_)(ANativeActivity *, void *, size_t) = elf_sym(game, "ANativeActivity_onCreate");
     if (!ANativeActivity_onCreate_) { fprintf(stderr, "[host] missing symbol ANativeActivity_onCreate\n"); return 1; }
