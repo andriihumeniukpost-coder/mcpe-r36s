@@ -804,6 +804,6 @@ int main(int argc, char **argv) {
     if (cb->onPause) cb->onPause(&act);
     if (cb->onStop) cb->onStop(&act);
     if (cb->onDestroy) cb->onDestroy(&act);
-    SDL_Quit();
-    return 0;
+    fprintf(stderr, "[host] clean exit\n"); fflush(NULL);
+    _exit(0);   /* SDL_Quit/driver teardown crashed on the R36S (pc=0) after the game had already shut down */
 }
