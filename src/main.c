@@ -460,9 +460,10 @@ static void prof_report(int round) {
 }
 static void *prof_thread(void *arg) {
     (void)arg; sleep(25);
-    for (int round = 0; round < 5; round++) {
+    for (int round = 0; round < 40; round++) {
+        if (round >= 5) sleep(40);                      /* later windows: sparse, so that in-world play is profiled too */
         prof_i = 0;
-        for (int k = 0; k < 500; k++) {
+        for (int k = 0; k < (round < 5 ? 500 : 300); k++) {
             DIR *d = opendir("/proc/self/task"); if (!d) break;
             struct dirent *e; int me = (int)syscall(SYS_gettid);
             while ((e = readdir(d))) { int tid = atoi(e->d_name); if (tid <= 0 || tid == me) continue;
@@ -472,6 +473,31 @@ static void *prof_thread(void *arg) {
             closedir(d); usleep(10000);
         }
         prof_report(round);
+    }
+    return NULL;
+}
+
+/* ---- per-thread CPU usage every 10 s: "[cpu]" lines show which thread saturates a core */
+static void *cpu_thread(void *arg) {
+    (void)arg; struct { int tid; unsigned long t; char comm[20]; } prev[96]; int np = 0; long hz = sysconf(_SC_CLK_TCK);
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (;;) {
+        sleep(10);
+        struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1); double dt = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9; t0 = t1;
+        char line[600]; int len = 0; double total = 0; DIR *d = opendir("/proc/self/task"); if (!d) continue; struct dirent *e;
+        struct { int tid; unsigned long t; char comm[20]; } cur[96]; int nc = 0;
+        while ((e = readdir(d)) && nc < 96) { int tid = atoi(e->d_name); if (tid <= 0) continue;
+            char sp[64], sb[512]; snprintf(sp, sizeof sp, "/proc/self/task/%d/stat", tid); int fd = open(sp, O_RDONLY); if (fd < 0) continue;
+            ssize_t m = read(fd, sb, sizeof sb - 1); close(fd); if (m <= 0) continue; sb[m] = 0;
+            char *q = strrchr(sb, ')'); char *o = strchr(sb, '('); if (!q || !o) continue;
+            unsigned long ut = 0, st = 0; if (sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) != 2) continue;
+            cur[nc].tid = tid; cur[nc].t = ut + st; snprintf(cur[nc].comm, sizeof cur[nc].comm, "%.*s", (int)(q - o - 1 > 15 ? 15 : q - o - 1), o + 1); nc++; }
+        closedir(d);
+        for (int i = 0; i < nc; i++) { unsigned long pt = 0; for (int k = 0; k < np; k++) if (prev[k].tid == cur[i].tid) { pt = prev[k].t; break; }
+            double pct = pt ? 100.0 * (double)(cur[i].t - pt) / hz / dt : 0; total += pct;
+            if (pct >= 8 && len < 520) len += snprintf(line + len, sizeof line - len, " %s(%d)=%.0f%%", cur[i].comm, cur[i].tid, pct); }
+        fprintf(stderr, "[cpu] total %.0f%% of %ld cores |%s\n", total, sysconf(_SC_NPROCESSORS_ONLN), len ? line : " idle"); fflush(stderr);
+        memcpy(prev, cur, sizeof(cur[0]) * nc); np = nc;
     }
     return NULL;
 }
@@ -696,7 +722,7 @@ int main(int argc, char **argv) {
     if (loadtest && !getenv("MCPE_LOADTEST_RUN")) { fprintf(stderr, "[host] loadtest finished OK\n"); return 0; }
 
     { pthread_t wt; pthread_create(&wt, NULL, watchdog, NULL); pthread_detach(wt); }
-    if (!getenv("MCPE_NOPROF")) { pthread_t pt; pthread_create(&pt, NULL, prof_thread, NULL); pthread_detach(pt); }
+    if (!getenv("MCPE_NOPROF")) { pthread_t pt; pthread_create(&pt, NULL, prof_thread, NULL); pthread_detach(pt); pthread_create(&pt, NULL, cpu_thread, NULL); pthread_detach(pt); }
     /* MainActivity.onCreate calls nativeRegisterThis(): it stores the activity and releases the mutex that
      * JNI_OnLoad leaves locked; the game thread (android_main) blocks on that mutex until then. */
     {
