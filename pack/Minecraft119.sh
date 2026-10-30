@@ -77,6 +77,25 @@ rm -f "$GAMEDIR"/.[0-9]* "$GAMEDIR"/ldtrace* 2>/dev/null   # leftovers of earlie
 echo "== deps of mcpe (armhf loader):"; LD_TRACE_LOADED_OBJECTS=1 ./mcpe 2>&1 | head -30
 echo "== 32-bit runtime libs:"; ls -la "$LIBSYS"/libSDL2* "$LIBSYS"/libstdc++* "$LIBSYS"/libgcc_s* "$LIBSYS"/libEGL* "$LIBSYS"/libGLESv2* 2>&1 | head -20
 
+
+# ---- performance defaults (applied ONCE; delete mcpe119/perf1.done to apply them again) ----
+# shorter render distance and cheaper graphics settings; change them in-game afterwards, they are not forced on every start
+OPT="$GAMEDIR/data/games/com.mojang/minecraftpe/options.txt"
+if [ ! -f "$GAMEDIR/perf1.done" ]; then
+  mkdir -p "$(dirname "$OPT")"; touch "$OPT"
+  setopt() { if grep -q "^$1:" "$OPT" 2>/dev/null; then sed -i "s/^$1:.*/$1:$2/" "$OPT"; else printf '%s:%s\n' "$1" "$2" >> "$OPT"; fi; }
+  setopt gfx_renderdistance 5
+  setopt gfx_fancygraphics 0
+  setopt gfx_fancyskies 0
+  setopt gfx_smoothlighting 0
+  setopt gfx_bubble_particles 0
+  setopt gfx_toggleclouds 0
+  setopt gfx_max_framerate 30
+  touch "$GAMEDIR/perf1.done"; echo "== performance defaults written to options.txt"
+fi
+# glibc malloc: the game allocates/frees constantly; do not hand memory back to the kernel on every free
+export MALLOC_TRIM_THRESHOLD_=67108864 MALLOC_TOP_PAD_=8388608 MALLOC_ARENA_MAX=4
+
 [ -n "$GPTOKEYB" ] && { $GPTOKEYB "mcpe" & }
 # performance: pin CPU and GPU governors to "performance" while the game runs (restored afterwards)
 SAVED=""
