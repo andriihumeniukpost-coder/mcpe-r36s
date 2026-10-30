@@ -32,10 +32,16 @@ jobs:
             mkdir -p pkg119/mcpe119/libs
             cp build/mcpe pkg119/mcpe119/ && cp build/libs/*.so pkg119/mcpe119/libs/
             cp pack/Minecraft119.sh pkg119/ && echo "Put the Minecraft 1.19.22 apk (armeabi-v7a) into this folder and launch Minecraft119.sh" > pkg119/mcpe119/PUT_APK_HERE.txt
-            (cd pkg119 && zip -qr ../mcpe119-r36s-port.zip .)'
+            (cd pkg119 && zip -qr ../mcpe119-r36s-port.zip .)
+            echo "== package 1.9.0.x (Minecraft190.sh + mcpe190/)"
+            mkdir -p pkg190/mcpe190/libs
+            cp build/mcpe pkg190/mcpe190/ && cp build/libs/*.so pkg190/mcpe190/libs/
+            cp pack/Minecraft190.sh pkg190/ && echo "Put the Minecraft 1.9.0.15 apk (armeabi-v7a) into this folder and launch Minecraft190.sh" > pkg190/mcpe190/PUT_APK_HERE.txt
+            (cd pkg190 && zip -qr ../mcpe190-r36s-port.zip .)'
       - uses: actions/upload-artifact@v4
         with:
           name: mcpe-r36s-port
           path: |
             mcpe-r36s-port.zip
             mcpe119-r36s-port.zip
+            mcpe190-r36s-port.zip

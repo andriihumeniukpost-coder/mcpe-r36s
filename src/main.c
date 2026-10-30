@@ -703,6 +703,7 @@ int main(int argc, char **argv) {
           if (!cxx) { fprintf(stderr, "[host] cannot load libc++_shared.so\n"); return 1; }
           g_modern = 1; fprintf(stderr, "[host] libc++_shared.so found -> Minecraft 1.19.x mode\n");
       } }
+    if (getenv("MCPE_MODERN")) { g_modern = 1; fprintf(stderr, "[host] MCPE_MODERN set -> modern Java-side answers (Minecraft 1.9.x-1.19.x)\n"); }
     char gamepath[1300];
     snprintf(gamepath, sizeof gamepath, "%s/libminecraftpe.so", libdir);
     ElfLib *game = elf_load(gamepath, "libminecraftpe.so");

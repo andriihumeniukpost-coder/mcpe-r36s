@@ -116,6 +116,9 @@ static int modern_call(meth *m, jvalue *a, JV *r) {
     if (!strcmp(n, "receivedLicenseResponse") || !strcmp(n, "hasVerifiedLicense") || !strcmp(n, "isLicenseVerified") || !strcmp(n, "isStoreInitialized")) { r->z = 1; return 1; }
     if (!strcmp(n, "isTrial") || !strcmp(n, "isTrialMode") || !strcmp(n, "isDemo")) { r->z = 0; return 1; }
     if (!strcmp(n, "getDeviceRegistrationToken")) { r->l = mkstr("r36s-local-device-token"); return 1; }
+    /* Xbox Live CLL telemetry helpers (1.9.x): plain strings, never NULL */
+    if (!strcmp(n, "GetLocalStoragePath")) { r->l = mkstr(dd); return 1; }
+    if (!strcmp(n, "ReadConfigFile") || !strcmp(n, "getSystemProxy")) { r->l = mkstr(""); return 1; }
     if (!strcmp(n, "createGooglePlayStore")) {
         jobj *st = mk(K_OBJ, "com/mojang/minecraftpe/store/Store"); r->l = (jobject)st;
         if (a[1].l) { pthread_t t; if (!pthread_create(&t, NULL, store_init_thread, a[1].l)) pthread_detach(t); }
