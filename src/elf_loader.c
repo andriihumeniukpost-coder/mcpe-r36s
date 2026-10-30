@@ -65,9 +65,15 @@ static int h_getaddrinfo(const char *n, const char *s, const struct addrinfo *hi
 }
 static void h_freeaddrinfo(struct addrinfo *a) { swap_ai(a); freeaddrinfo(a); }
 
-__asm__(".text\n.arm\n.globl host_sigsetjmp\n.type host_sigsetjmp,%function\n"
-        "host_sigsetjmp:\n mov r1, #0\n b __sigsetjmp\n");
-extern void host_sigsetjmp(void);
+/* Bionic's jmp_buf is 256 bytes (64 longs); glibc's setjmp/__sigsetjmp write a signal mask behind that (+4..+132 bytes), which smashed the
+ * caller's stack (libpng in 1.19 calls setjmp on a 256-byte stack buffer). Own implementation: r4-r11, sp, lr, d8-d15 = 104 bytes, no signal mask. */
+__asm__(".text\n.arm\n.fpu vfpv3-d16\n"
+        ".globl host_setjmp\n.type host_setjmp,%function\nhost_setjmp:\n"
+        " mov ip, r0\n stmia ip!, {r4-r11}\n str sp, [ip], #4\n str lr, [ip], #4\n vstmia ip!, {d8-d15}\n mov r0, #0\n bx lr\n"
+        ".globl host_sigsetjmp\n.type host_sigsetjmp,%function\nhost_sigsetjmp:\n b host_setjmp\n"
+        ".globl host_longjmp\n.type host_longjmp,%function\nhost_longjmp:\n"
+        " mov ip, r0\n ldmia ip!, {r4-r11}\n ldr sp, [ip], #4\n ldr lr, [ip], #4\n vldmia ip!, {d8-d15}\n movs r0, r1\n moveq r0, #1\n bx lr\n");
+extern void host_setjmp(void), host_sigsetjmp(void), host_longjmp(void);
 
 /* unwinder lookup, also used for code in our custom libs */
 static void *find_exidx(uintptr_t pc, int *count) {
@@ -132,7 +138,8 @@ static void h_assert2(const char *file, int line, const char *func, const char *
 static const struct { const char *name; void *addr; } host_syms[] = {
     { "__assert2", (void *)h_assert2 },
     { "__aeabi_atexit", (void *)h_aeabi_atexit },
-    { "sigsetjmp", (void *)host_sigsetjmp },
+    { "sigsetjmp", (void *)host_sigsetjmp }, { "setjmp", (void *)host_setjmp }, { "_setjmp", (void *)host_setjmp },
+    { "longjmp", (void *)host_longjmp }, { "_longjmp", (void *)host_longjmp }, { "siglongjmp", (void *)host_longjmp },
     { "getaddrinfo", (void *)h_getaddrinfo },
     { "freeaddrinfo", (void *)h_freeaddrinfo },
     { "__gnu_Unwind_Find_exidx", (void *)__gnu_Unwind_Find_exidx },
