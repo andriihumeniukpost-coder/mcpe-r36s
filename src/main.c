@@ -337,6 +337,7 @@ static int map_axis(int a) {
 /* ---- hang diagnostics: after a few seconds every thread prints where it is */
 #include <sys/syscall.h>
 #include <dirent.h>
+#include <sys/resource.h>
 #include <pthread.h>
 static volatile int dump_lock;
 static void usr2(int sig, siginfo_t *si, void *uc) {
@@ -493,6 +494,8 @@ static void *cpu_thread(void *arg) {
             unsigned long ut = 0, st = 0; if (sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) != 2) continue;
             cur[nc].tid = tid; cur[nc].t = ut + st; snprintf(cur[nc].comm, sizeof cur[nc].comm, "%.*s", (int)(q - o - 1 > 15 ? 15 : q - o - 1), o + 1); nc++; }
         closedir(d);
+        /* chunk generation/meshing ("Streaming Pool") burns ~2 of the 4 cores and starves the game thread: run it at lower priority */
+        if (!getenv("MCPE_NONICE")) for (int i = 0; i < nc; i++) if (!strncmp(cur[i].comm, "Streaming", 9) && getpriority(PRIO_PROCESS, cur[i].tid) < 10) setpriority(PRIO_PROCESS, cur[i].tid, 10);
         for (int i = 0; i < nc; i++) { unsigned long pt = 0; for (int k = 0; k < np; k++) if (prev[k].tid == cur[i].tid) { pt = prev[k].t; break; }
             double pct = pt ? 100.0 * (double)(cur[i].t - pt) / hz / dt : 0; total += pct;
             if (pct >= 8 && len < 520) len += snprintf(line + len, sizeof line - len, " %s(%d)=%.0f%%", cur[i].comm, cur[i].tid, pct); }
