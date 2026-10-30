@@ -68,7 +68,7 @@ EXPORT void __FD_SET_chk(int fd, void *set, size_t sz) { (void)sz; ((unsigned lo
 EXPORT void __FD_CLR_chk(int fd, void *set, size_t sz) { (void)sz; ((unsigned long *)set)[fd / 32] &= ~(1ul << (fd % 32)); }
 EXPORT int __FD_ISSET_chk(int fd, const void *set, size_t sz) { (void)sz; return (((const unsigned long *)set)[fd / 32] >> (fd % 32)) & 1; }
 EXPORT uintptr_t __stack_chk_guard = 0x5ca1ab1e;
-EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected\n"); _exit(134); }
+EXPORT void __stack_chk_fail(void) { fprintf(stderr, "[compat] stack smashing detected (tid=%ld)\n", (long)syscall(SYS_gettid)); report("stack smash", __builtin_return_address(0)); _exit(134); }
 EXPORT void __google_potentially_blocking_region_begin(void) {}
 EXPORT void __google_potentially_blocking_region_end(void) {}
 static void (*do_signal(int sig, void (*h)(int)))(int) {
