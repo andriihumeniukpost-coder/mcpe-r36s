@@ -75,9 +75,9 @@ static jobject java_getFileDataBytes(const char *name) {
 
 /* ------------------------------------------ method dispatch by name */
 static void log_once(const char *kind, const char *name, const char *sig) {
-    static const char *seen[256]; static int ns;
-    for (int i = 0; i < ns; i++) if (seen[i] == name) return;
-    if (ns < 256) seen[ns++] = name;
+    static const char *seen[256]; static int cnt[256], ns;
+    for (int i = 0; i < ns; i++) if (seen[i] == name) { int c = ++cnt[i]; if (c >= 8 && (c & (c - 1)) == 0) fprintf(stderr, "[jni] %s %s called %d times\n", kind, name, c); return; }
+    if (ns < 256) { seen[ns] = name; cnt[ns++] = 1; }
     fprintf(stderr, "[jni] %s %s %s\n", kind, name, sig);
 }
 
@@ -112,6 +112,10 @@ static int modern_call(meth *m, jvalue *a, JV *r) {
     if (!strcmp(n, "getCPUType")) { r->l = mkstr("armeabi-v7a"); return 1; }
     if (!strcmp(n, "getCPUName")) { r->l = mkstr("ARM Cortex-A35"); return 1; }
     if (!strcmp(n, "getCPUFeatures")) { r->l = mkstr("neon vfpv4"); return 1; }
+    /* the game polls these during start-up and sits at ~61% while the license check "hasn't answered" yet */
+    if (!strcmp(n, "receivedLicenseResponse") || !strcmp(n, "hasVerifiedLicense") || !strcmp(n, "isLicenseVerified") || !strcmp(n, "isStoreInitialized")) { r->z = 1; return 1; }
+    if (!strcmp(n, "isTrial") || !strcmp(n, "isTrialMode") || !strcmp(n, "isDemo")) { r->z = 0; return 1; }
+    if (!strcmp(n, "getDeviceRegistrationToken")) { r->l = mkstr("r36s-local-device-token"); return 1; }
     if (!strcmp(n, "createGooglePlayStore")) {
         jobj *st = mk(K_OBJ, "com/mojang/minecraftpe/store/Store"); r->l = (jobject)st;
         if (a[1].l) { pthread_t t; if (!pthread_create(&t, NULL, store_init_thread, a[1].l)) pthread_detach(t); }
